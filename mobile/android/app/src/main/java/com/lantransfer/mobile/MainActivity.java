@@ -6,6 +6,10 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.text.InputType;
 import android.view.Gravity;
 import android.widget.Button;
@@ -36,6 +40,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.rgb(15, 18, 16));
+        createNotificationChannel();
         qrLauncher = registerForActivityResult(new ScanContract(), result -> { if (result.getContents() != null && !connectFromQr(result.getContents())) toast("二维码内容无法识别"); });
         buildUi();
     }
@@ -106,7 +111,10 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText("已连接 · " + name); connectButton.setText("已连接"); pickButton.setText("选择文件（加入待发送）"); }); }
     @Override public void onError(String message) { runOnUiThread(() -> { status.setText("连接失败"); connectButton.setEnabled(true); toast(message); }); }
     @Override public void onClosed() { runOnUiThread(() -> { status.setText("连接已断开"); connectButton.setEnabled(true); pickButton.setText("选择文件（加入待发送）"); }); }
-    @Override public void onIncomingOffer(String label) { runOnUiThread(() -> { status.setText("正在接收 · " + label); toast("电脑已发送：" + label); }); }
+    @Override public void onIncomingOffer(String label) { runOnUiThread(() -> { status.setText("正在接收 · " + label); toast("电脑已发送：" + label); showIncomingNotification(label); new android.app.AlertDialog.Builder(this).setTitle("收到文件").setMessage("电脑正在发送：\n" + label + "\n\n文件将保存到：下载/邻传").setPositiveButton("知道了", null).show(); }); }
+
+    private void createNotificationChannel() { if (Build.VERSION.SDK_INT >= 26) { NotificationChannel c = new NotificationChannel("transfer", "文件传输", NotificationManager.IMPORTANCE_DEFAULT); getSystemService(NotificationManager.class).createNotificationChannel(c); } }
+    private void showIncomingNotification(String label) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77); return; } NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, new android.app.Notification.Builder(this, "transfer").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle("邻传收到文件").setContentText(label + "，已保存到下载/邻传").setAutoCancel(true).build()); }
     @Override public void onProgress(int percent) { runOnUiThread(() -> status.setText("已连接 · 已发送 " + percent + "%")); }
     @Override protected void onDestroy() { if (client != null) client.close(); super.onDestroy(); }
 

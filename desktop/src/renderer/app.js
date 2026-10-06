@@ -108,6 +108,13 @@ function toast(msg, kind) {
   setTimeout(() => el.remove(), 2600);
 }
 
+function notify(title, body) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body, silent: false });
+    else if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+  } catch (_) {}
+}
+
 // ── 导航 ─────────────────────────────────────────────
 
 document.querySelectorAll('.nav-item').forEach((btn) => {
@@ -643,6 +650,7 @@ function showOffer(offer) {
     <span class="muted">将保存到 ${esc(offer.saveDir || '')}</span>`;
 
   $('offerModal').hidden = false;
+  notify('邻传收到文件', `${devName} 请求发送 ${offer.files.length} 个文件`);
 }
 
 $('btnAcceptOffer').addEventListener('click', async () => {
@@ -773,6 +781,7 @@ function bindEvents() {
           renderTransfers();
           if (ev === 'transfer:complete' && t.status === 'done') {
             toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
+            notify('邻传传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
           }
         }
         break;

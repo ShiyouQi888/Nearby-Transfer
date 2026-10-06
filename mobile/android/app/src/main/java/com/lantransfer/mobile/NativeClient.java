@@ -6,6 +6,8 @@ import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Environment;
+import android.content.ContentValues;
+import android.provider.MediaStore;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -118,16 +120,26 @@ final class NativeClient {
 
     private void acceptIncomingOffer(JSONObject msg) throws Exception {
         String transferId = msg.optString("transferId"); JSONArray files = msg.optJSONArray("files"); if (files == null || files.length() == 0) return;
-        File dir = new File(listener instanceof MainActivity ? ((MainActivity) listener).getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) : null, "received"); if (!dir.exists()) dir.mkdirs();
         String label = files.length() == 1 ? files.getJSONObject(0).optString("name", "文件") : files.length() + " 个文件"; listener.onIncomingOffer(label);
         JSONArray resume = new JSONArray();
-        for (int i = 0; i < files.length(); i++) { JSONObject f = files.getJSONObject(i); String id = f.optString("fileId"); String name = safeName(f.optString("name", "file")); File out = new File(dir, name); receiving.put(id, new ReceiveFile(transferId, id, f.optLong("size", 0), out)); }
-        sendJson(message("send_accept").put("transferId", transferId).put("acceptedBy", deviceName).put("resume", resume).put("saveTo", dir.getAbsolutePath()));
+        String savePath = "下载/邻传";
+        for (int i = 0; i < files.length(); i++) { JSONObject f = files.getJSONObject(i); String id = f.optString("fileId"); String name = safeName(f.optString("name", "file")); ReceiveFile rf = createReceiveFile(transferId, id, f.optLong("size", 0), name, f.optString("mime", "application/octet-stream")); receiving.put(id, rf); }
+        sendJson(message("send_accept").put("transferId", transferId).put("acceptedBy", deviceName).put("resume", resume).put("saveTo", savePath));
     }
 
-    private void receiveChunk(String fileId, byte[] payload) throws IOException { ReceiveFile f = receiving.get(fileId); if (f == null) return; if (f.output == null) f.output = new FileOutputStream(f.file, true); f.output.write(payload); f.received += payload.length; if (f.size > 0) listener.onProgress((int) Math.min(99, f.received * 100L / f.size)); }
+    private ReceiveFile createReceiveFile(String transferId, String id, long size, String name, String mime) throws IOException {
+        try {
+            if (Build.VERSION.SDK_INT >= 29 && listener instanceof MainActivity) {
+                ContentValues v = new ContentValues(); v.put(MediaStore.Downloads.DISPLAY_NAME, name); v.put(MediaStore.Downloads.MIME_TYPE, mime); v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/邻传"); v.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = ((MainActivity) listener).getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v); if (uri != null) return new ReceiveFile(transferId, id, size, name, uri, ((MainActivity) listener).getContentResolver().openOutputStream(uri));
+            }
+        } catch (Exception ignored) { }
+        File dir = new File(((MainActivity) listener).getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "received"); if (!dir.exists()) dir.mkdirs(); File out = new File(dir, name); return new ReceiveFile(transferId, id, size, name, Uri.fromFile(out), new FileOutputStream(out, true));
+    }
 
-    private void finishIncomingFile(String fileId) throws IOException { ReceiveFile f = receiving.remove(fileId); if (f != null && f.output != null) { f.output.flush(); f.output.close(); listener.onProgress(100); } }
+    private void receiveChunk(String fileId, byte[] payload) throws IOException { ReceiveFile f = receiving.get(fileId); if (f == null) return; f.output.write(payload); f.received += payload.length; if (f.size > 0) listener.onProgress((int) Math.min(99, f.received * 100L / f.size)); }
+
+    private void finishIncomingFile(String fileId) throws IOException { ReceiveFile f = receiving.remove(fileId); if (f != null && f.output != null) { f.output.flush(); f.output.close(); if (Build.VERSION.SDK_INT >= 29 && listener instanceof MainActivity && "content".equals(f.uri.getScheme())) { ContentValues v = new ContentValues(); v.put(MediaStore.Downloads.IS_PENDING, 0); ((MainActivity) listener).getContentResolver().update(f.uri, v, null, null); } listener.onProgress(100); } }
 
     private static String safeName(String name) { return name.replaceAll("[\\\\/:*?\"<>|]", "_"); }
 
@@ -173,5 +185,5 @@ final class NativeClient {
     private static String reason(String value) { if ("need_pair".equals(value)) return "设备未配对，请在电脑端输入匹配码或扫码配对"; if ("bad_token".equals(value)) return "匹配凭证已失效，请重新配对"; if ("rejected".equals(value)) return "电脑端拒绝了连接"; return "连接被拒绝（" + value + "）"; }
     private static final class FileRef { final String id; final Uri uri; final String name, mime; final long size; FileRef(String id, Uri uri, String name, long size, String mime) { this.id = id; this.uri = uri; this.name = name; this.size = size; this.mime = mime; } }
     private static final class JSONObjectAuth { final String mode, code, token; JSONObjectAuth(String mode, String code, String token) { this.mode = mode; this.code = code; this.token = token; } }
-    private static final class ReceiveFile { final String transferId, id; final long size; final File file; FileOutputStream output; long received; ReceiveFile(String transferId, String id, long size, File file) { this.transferId = transferId; this.id = id; this.size = size; this.file = file; } }
+    private static final class ReceiveFile { final String transferId, id, name; final long size; final Uri uri; final OutputStream output; long received; ReceiveFile(String transferId, String id, long size, String name, Uri uri, OutputStream output) { this.transferId = transferId; this.id = id; this.size = size; this.name = name; this.uri = uri; this.output = output; } }
 }

@@ -119,6 +119,7 @@ function fillIllusts(root) {
 // ── Toast ────────────────────────────────────────────
 
 function toast(msg, kind) {
+  msg = window.LTP_I18N ? window.LTP_I18N.t(msg) : msg;
   const el = document.createElement('div');
   el.className = 'toast' + (kind ? ' ' + kind : '');
   el.textContent = msg;
@@ -1056,6 +1057,8 @@ async function loadDevices() {
   renderTransfers();
   await newCodeQuiet();
   await refreshQr();
+  const language = $('setLanguage');
+  if (language) { language.value = window.LTP_I18N ? window.LTP_I18N.getLanguage() : 'zh-CN'; language.addEventListener('change', () => window.LTP_I18N.setLanguage(language.value)); }
 
   // 初始化最大化按钮状态（窗口可能以最大化启动，或上次退出时是最大化）
   setWinMaxIcon(!!(await api.winIsMaximized()));

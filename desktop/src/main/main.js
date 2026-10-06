@@ -55,7 +55,7 @@ function appVersion() {
       if (pkg.version) return String(pkg.version);
     }
   } catch (_) { /* 读不到就回退 */ }
-  try { return app.getVersion(); } catch (_) { return '1.0.0'; }
+  try { return app.getVersion(); } catch (_) { return '1.0.2'; }
 }
 
 function checkGithubRelease() {

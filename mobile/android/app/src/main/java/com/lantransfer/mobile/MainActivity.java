@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.content.SharedPreferences;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.pm.PackageManager;
@@ -55,11 +56,13 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private Button sendButton;
     private Button updateButton;
     private TextView updateStatus;
+    private boolean english;
     private TextView receiveText;
     private LinearLayout receiveActions;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        english = getPreferences(MODE_PRIVATE).getBoolean("english", false);
         getWindow().setStatusBarColor(Color.rgb(15, 18, 16));
         createNotificationChannel();
         NativeDiscovery.AppContextHolder.context = getApplicationContext();
@@ -98,9 +101,11 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
         settingsSection = new LinearLayout(this); settingsSection.setOrientation(LinearLayout.VERTICAL);
         TextView settingsTitle = text("设置", 20, Color.WHITE); settingsTitle.setPadding(0, dp(22), 0, dp(8)); settingsSection.addView(settingsTitle, params(-1, 60));
-        TextView settingsInfo = text("应用信息\n邻传 Nearby Transfer\n原生 Android 应用\n\n网络要求\n手机和电脑连接同一 Wi‑Fi，局域网内直连传输。\n\n文件保存位置\n接收文件默认保存到：下载 / 邻传", 14, Color.rgb(163, 167, 164)); settingsInfo.setPadding(dp(16), dp(14), dp(16), dp(14)); settingsInfo.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); settingsSection.addView(settingsInfo, params(-1, 178));
+        String settingsCopy = english ? "App information\nNearby Transfer\nNative Android app\n\nNetwork\nConnect your phone and computer to the same Wi‑Fi for direct LAN transfer.\n\nSave location\nReceived files are saved to: Downloads / Nearby Transfer" : "应用信息\n邻传 Nearby Transfer\n原生 Android 应用\n\n网络要求\n手机和电脑连接同一 Wi‑Fi，局域网内直连传输。\n\n文件保存位置\n接收文件默认保存到：下载 / 邻传";
+        TextView settingsInfo = text(settingsCopy, 14, Color.rgb(163, 167, 164)); settingsInfo.setPadding(dp(16), dp(14), dp(16), dp(14)); settingsInfo.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); settingsSection.addView(settingsInfo, params(-1, 178));
         TextView contactTitle = text("关于与联系", 18, Color.WHITE); contactTitle.setPadding(0, dp(22), 0, dp(8)); settingsSection.addView(contactTitle, params(-1, 60));
-        TextView contactInfo = text("作者：齐世有\n邮箱：blacklaw@foxmail.com\n版权：© 2026 邻传 Nearby Transfer\n本软件仅用于同一局域网内的设备互传。", 14, Color.rgb(163, 167, 164)); contactInfo.setPadding(dp(16), dp(14), dp(16), dp(14)); contactInfo.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); settingsSection.addView(contactInfo, params(-1, 128));
+        String contactCopy = english ? "Author: Qi Shiyou\nEmail: blacklaw@foxmail.com\nCopyright: © 2026 Nearby Transfer\nFor file transfer between devices on the same LAN." : "作者：齐世有\n邮箱：blacklaw@foxmail.com\n版权：© 2026 邻传 Nearby Transfer\n本软件仅用于同一局域网内的设备互传。";
+        TextView contactInfo = text(contactCopy, 14, Color.rgb(163, 167, 164)); contactInfo.setPadding(dp(16), dp(14), dp(16), dp(14)); contactInfo.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); settingsSection.addView(contactInfo, params(-1, 128));
         TextView quickTitle = text("快捷入口", 17, Color.WHITE); quickTitle.setPadding(0, dp(22), 0, dp(2)); settingsSection.addView(quickTitle, params(-1, 42));
         TextView quickHint = text("点击图标访问相关页面", 12, Color.rgb(127, 132, 128)); settingsSection.addView(quickHint, params(-1, 28));
         LinearLayout linkRow = new LinearLayout(this); linkRow.setOrientation(LinearLayout.HORIZONTAL); linkRow.setGravity(Gravity.CENTER); linkRow.setPadding(0, dp(4), 0, dp(4));
@@ -114,6 +119,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         TextView updateTitle = text("版本更新", 17, Color.WHITE); updateTitle.setPadding(0, dp(18), 0, dp(2)); settingsSection.addView(updateTitle, params(-1, 38));
         updateStatus = text("更新源：GitHub Releases", 12, Color.rgb(127, 132, 128)); settingsSection.addView(updateStatus, params(-1, 28));
         updateButton = button("检查更新"); updateButton.setOnClickListener(v -> checkForUpdates()); settingsSection.addView(updateButton, params(-1, 52));
+        Button languageButton = button("语言：简体中文"); languageButton.setOnClickListener(v -> { getPreferences(MODE_PRIVATE).edit().putBoolean("english", !english).apply(); recreate(); }); settingsSection.addView(languageButton, params(-1, 52));
 
         pageHost = new FrameLayout(this); pageHost.setBackgroundColor(Color.rgb(15, 18, 16));
         pageHost.addView(page(connectionSection)); pageHost.addView(page(sendSection)); pageHost.addView(page(settingsSection));
@@ -144,12 +150,12 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private void connect() {
         String ip = ipInput.getText().toString().trim(), code = codeInput.getText().toString().trim();
         if (ip.isEmpty() || code.length() != 6) { toast("请输入电脑 IP 和 6 位匹配码"); return; }
-        connectButton.setEnabled(false); status.setText("正在连接…");
+        connectButton.setEnabled(false); status.setText(tr("正在连接…"));
         client = new NativeClient(deviceId, "我的手机", this); client.connect(ip, NativeClient.PORT, code);
     }
 
     private void scanQr() {
-        ScanOptions options = new ScanOptions(); options.setDesiredBarcodeFormats(ScanOptions.QR_CODE); options.setPrompt("将电脑端二维码放入正方形取景框"); options.setBeepEnabled(false); options.setOrientationLocked(true);
+        ScanOptions options = new ScanOptions(); options.setDesiredBarcodeFormats(ScanOptions.QR_CODE); options.setPrompt(english ? "Place the computer QR code inside the square frame" : "将电脑端二维码放入正方形取景框"); options.setBeepEnabled(false); options.setOrientationLocked(true);
         qrLauncher.launch(options);
     }
 
@@ -163,7 +169,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             }
             org.json.JSONObject q = new org.json.JSONObject(payload); String ip = q.optString("ip"); int port = q.optInt("port", NativeClient.PORT); String token = q.optString("token");
             if (ip.isEmpty() || token.isEmpty()) return false;
-            connectButton.setEnabled(false); status.setText("正在扫码配对…");
+            connectButton.setEnabled(false); status.setText(tr("正在扫码配对…"));
             client = new NativeClient(deviceId, "我的手机", this); client.connectWithQr(ip, port, token); return true;
         } catch (Exception ignored) { return false; }
     }
@@ -191,13 +197,13 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         for (CheckBox check : pendingChecks) if (check.isChecked() && check.getTag() instanceof Uri) selected.add((Uri) check.getTag());
         if (selected.isEmpty()) { toast("请先勾选要发送的文件"); return; }
         if (client == null || !client.isConnected()) { toast("请先连接电脑，再发送待选文件"); return; }
-        client.sendFiles(getContentResolver(), selected); pendingUris.removeAll(selected); updatePendingText(); toast("已发送 " + selected.size() + " 个文件，等待电脑确认");
+        client.sendFiles(getContentResolver(), selected); pendingUris.removeAll(selected); updatePendingText(); toast(english ? "Sent " + selected.size() + " file(s); waiting for confirmation" : "已发送 " + selected.size() + " 个文件，等待电脑确认");
     }
 
     private void updatePendingText() {
         int selected = 0;
         for (CheckBox check : pendingChecks) if (check.isChecked()) selected++;
-        if (pendingText != null) pendingText.setText(pendingUris.isEmpty() ? "待发送区：暂无文件" : "待发送区：" + pendingUris.size() + " 个文件，已勾选 " + selected + " 个");
+        if (pendingText != null) pendingText.setText(pendingUris.isEmpty() ? tr("待发送区：暂无文件") : (english ? "Queue: " + pendingUris.size() + " file(s), " + selected + " selected" : "待发送区：" + pendingUris.size() + " 个文件，已勾选 " + selected + " 个"));
         if (pendingList == null) return;
         boolean hadRenderedItems = !pendingChecks.isEmpty();
         java.util.HashSet<String> selectedUris = new java.util.HashSet<>();
@@ -284,24 +290,72 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
     private String appVersion() {
         try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
-        catch (Exception ignored) { return "1.0.1"; }
+        catch (Exception ignored) { return "1.0.2"; }
     }
 
-    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText("已连接 · " + name); connectButton.setEnabled(true); connectButton.setText("已连接"); pickButton.setText("选择文件（加入待发送）"); updateSendButtonState(); }); }
-    @Override public void onError(String message) { runOnUiThread(() -> { status.setText("连接失败"); connectButton.setEnabled(true); updateSendButtonState(); toast(message); }); }
-    @Override public void onClosed() { runOnUiThread(() -> { status.setText("连接已断开"); connectButton.setEnabled(true); pickButton.setText("选择文件（加入待发送）"); updateSendButtonState(); }); }
-    @Override public void onIncomingOffer(String label) { runOnUiThread(() -> { status.setText("等待接收确认"); receiveText.setText("待确认：" + label + "\n保存位置：下载/邻传"); receiveActions.setVisibility(View.VISIBLE); toast("收到文件，请选择接收或拒绝"); showIncomingNotification(label); }); }
+    private String tr(String value) {
+        if (!english || value == null) return value;
+        switch (value) {
+            case "局域网高速互传": return "Fast LAN Transfer";
+            case "未连接": return "Not connected";
+            case "连接电脑": return "Connect computer";
+            case "电脑 IP，例如 192.168.1.23": return "Computer IP, e.g. 192.168.1.23";
+            case "6 位匹配码": return "6-digit pairing code";
+            case "使用匹配码连接": return "Connect with pairing code";
+            case "扫描电脑二维码": return "Scan computer QR code";
+            case "发送文件": return "Send files";
+            case "选择文件（加入待发送）": return "Choose files to queue";
+            case "待发送区：暂无文件": return "Queue: no files";
+            case "发送已勾选文件": return "Send selected files";
+            case "接收区：暂无文件": return "Receive: no files";
+            case "拒绝接收": return "Reject";
+            case "确认接收": return "Accept";
+            case "设置": return "Settings";
+            case "原生 Android 应用": return "Native Android app";
+            case "关于与联系": return "About & contact";
+            case "快捷入口": return "Quick links";
+            case "点击图标访问相关页面": return "Tap an icon to open a link";
+            case "官网": return "Website";
+            case "官方网站": return "Official website";
+            case "GitHub": return "GitHub";
+            case "项目源码": return "Source code";
+            case "联系作者": return "Contact author";
+            case "发送邮件": return "Send email";
+            case "版本更新": return "Updates";
+            case "更新源：GitHub Releases": return "Source: GitHub Releases";
+            case "检查更新": return "Check for updates";
+            case "语言：简体中文": return "Language: English";
+            case "已连接": return "Connected";
+            case "连接失败": return "Connection failed";
+            case "连接已断开": return "Disconnected";
+            case "二维码内容无法识别": return "QR code not recognized";
+            case "请输入电脑 IP 和 6 位匹配码": return "Enter the computer IP and 6-digit pairing code";
+            case "正在连接…": return "Connecting…";
+            case "正在扫码配对…": return "Pairing by QR code…";
+            case "请先勾选要发送的文件": return "Select at least one file";
+            case "请先连接电脑，再发送待选文件": return "Connect to the computer before sending";
+            case "无法打开文件选择器，请检查系统文件应用": return "Unable to open the file picker";
+            case "无法打开链接，请检查系统应用": return "Unable to open the link";
+            case "收到文件，请选择接收或拒绝": return "Files received; choose accept or reject";
+            default: return value;
+        }
+    }
+
+    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText((english ? "Connected · " : "已连接 · ") + name); connectButton.setEnabled(true); connectButton.setText(tr("已连接")); pickButton.setText(tr("选择文件（加入待发送）")); updateSendButtonState(); }); }
+    @Override public void onError(String message) { runOnUiThread(() -> { status.setText(tr("连接失败")); connectButton.setEnabled(true); updateSendButtonState(); toast(message); }); }
+    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件（加入待发送）")); updateSendButtonState(); }); }
+    @Override public void onIncomingOffer(String label) { runOnUiThread(() -> { status.setText(english ? "Waiting for confirmation" : "等待接收确认"); receiveText.setText(english ? "Pending: " + label + "\nSave to: Downloads/Nearby Transfer" : "待确认：" + label + "\n保存位置：下载/邻传"); receiveActions.setVisibility(View.VISIBLE); toast("收到文件，请选择接收或拒绝"); showIncomingNotification(label); }); }
 
     private void createNotificationChannel() { if (Build.VERSION.SDK_INT >= 26) { NotificationChannel c = new NotificationChannel("transfer", "文件传输", NotificationManager.IMPORTANCE_DEFAULT); getSystemService(NotificationManager.class).createNotificationChannel(c); } }
     private void showIncomingNotification(String label) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77); return; } NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, new android.app.Notification.Builder(this, "transfer").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle("邻传收到文件").setContentText(label + "，等待你确认接收").setAutoCancel(true).build()); }
-    @Override public void onProgress(int percent) { runOnUiThread(() -> status.setText("已连接 · 已发送 " + percent + "%")); }
+    @Override public void onProgress(int percent) { runOnUiThread(() -> status.setText(english ? "Connected · Sent " + percent + "%" : "已连接 · 已发送 " + percent + "%")); }
     @Override protected void onDestroy() { if (client != null) client.close(); if (discovery != null) discovery.stop(); super.onDestroy(); }
 
-    private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(value); v.setTextSize(size); v.setTextColor(color); v.setBackgroundColor(Color.TRANSPARENT); return v; }
-    private EditText input(String hint) { EditText v = new EditText(this); v.setHint(hint); v.setHintTextColor(Color.rgb(127,132,128)); v.setTextColor(Color.WHITE); v.setTextSize(15); v.setSingleLine(true); v.setPadding(dp(16), 0, dp(16), 0); v.setBackground(box(Color.rgb(31,36,33), Color.rgb(42,47,45), dp(12))); return v; }
-    private Button button(String label) { Button b = new Button(this); b.setText(label); b.setTextSize(15); b.setTextColor(Color.rgb(7,26,18)); b.setAllCaps(false); b.setPadding(dp(12), 0, dp(12), 0); b.setBackground(box(Color.rgb(7,193,96), Color.rgb(7,193,96), dp(12))); return b; }
+    private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(tr(value)); v.setTextSize(size); v.setTextColor(color); v.setBackgroundColor(Color.TRANSPARENT); return v; }
+    private EditText input(String hint) { EditText v = new EditText(this); v.setHint(tr(hint)); v.setHintTextColor(Color.rgb(127,132,128)); v.setTextColor(Color.WHITE); v.setTextSize(15); v.setSingleLine(true); v.setPadding(dp(16), 0, dp(16), 0); v.setBackground(box(Color.rgb(31,36,33), Color.rgb(42,47,45), dp(12))); return v; }
+    private Button button(String label) { Button b = new Button(this); b.setText(tr(label)); b.setTextSize(15); b.setTextColor(Color.rgb(7,26,18)); b.setAllCaps(false); b.setPadding(dp(12), 0, dp(12), 0); b.setBackground(box(Color.rgb(7,193,96), Color.rgb(7,193,96), dp(12))); return b; }
     private GradientDrawable box(int fill, int stroke, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(fill); d.setCornerRadius(radius); d.setStroke(dp(1), stroke); return d; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private LinearLayout.LayoutParams params(int width, int height) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(width, dp(height)); p.setMargins(0, dp(6), 0, dp(6)); return p; }
-    private void toast(String message) { Toast.makeText(this, message, Toast.LENGTH_LONG).show(); }
+    private void toast(String message) { Toast.makeText(this, tr(message), Toast.LENGTH_LONG).show(); }
 }

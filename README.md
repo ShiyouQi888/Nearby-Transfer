@@ -407,13 +407,22 @@ cd desktop && npm run build
 cd mobile && npm run cap:build
 # 产物：mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
-# 发布 Release（把安装包与 APK 作为附件上传）
+# 发布 Release（附件建议用 ASCII 名，中文名会被 gh 截断）
 gh release create v1.0.0 \
   "desktop/release/邻传 Setup 1.0.0.exe" \
   "mobile/android/app/build/outputs/apk/debug/app-debug.apk" \
   --title "邻传 Nearby Transfer v1.0.0" \
-  --notes "首个版本：设备发现 / 扫码与匹配码配对 / 分片断点续传 / 自绘标题栏 / 内嵌思源黑体 / 关于页"
+  --notes-file dist-mobile/RELEASE_NOTES.md
 ```
+
+> **坑：`gh release create` 的 `源文件#新名字` 语法处理中文会截断** ——
+> 实测 `邻传 Setup 1.0.0.exe` 会被截成 `Setup.1.0.0.exe`、`邻传-v1.0.0-debug.apk` 变成 `-v1.0.0-debug.apk`。
+> 解决办法：上传后用 API 重命名（附件 ID 从
+> `gh api repos/<owner>/<repo>/releases/tags/v1.0.0 --jq '.assets[] | "\(.id) \(.name)"'` 取）：
+>
+> ```bash
+> gh api -X PATCH repos/<owner>/<repo>/releases/assets/<id> -f name="Nearby-Transfer-Setup-1.0.0.exe"
+> ```
 
 > Windows 沙箱环境下 `cap sync` 的批量清理可能被安全策略拦截，
 > 此时可手动等价同步：清空 `mobile/android/app/src/main/assets/public/` 后

@@ -26,7 +26,9 @@ mobile/.vite/
 # ── 交付目录 ──────────────────────────────
 # 发行版由 GitHub Releases 托管，避免仓库承载大二进制
 dist-desktop/
-dist-mobile/
+# 先忽略目录内全部内容，再单独放行说明文档（negation 必须先排除目录内容才生效）
+dist-mobile/*
+!dist-mobile/RELEASE_NOTES.md
 
 # ── 开发用截图与临时目录 ──────────────────
 _shots/

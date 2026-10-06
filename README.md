@@ -32,6 +32,48 @@
 - **设备管理**：保存历史设备，支持快捷发送和删除设备记录。
 - **品牌化体验**：Windows 端采用统一深色设计系统，Android 端为原生应用，安装器和通知使用统一品牌视觉。
 
+## 产品界面
+
+邻传采用深色桌面设计与绿色品牌强调色，电脑端将设备发现、配对、传输、历史和关于信息分区组织；手机端保持原生 Android 的轻量操作路径。
+
+### Windows 电脑端
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/desktop-devices.png" alt="Windows 在线设备与快速发送" />
+      <br /><sub>在线设备 · 网络扫描 · 快速发送</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/desktop-pairing.png" alt="Windows 扫码配对与匹配码" />
+      <br /><sub>扫码配对 · 6 位匹配码</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/desktop-transfer-history.png" alt="Windows 传输历史" />
+      <br /><sub>传输历史 · 文件状态 · 定位与删除</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/desktop-devices-history.png" alt="Windows 历史设备" />
+      <br /><sub>历史设备 · 快捷发送 · 删除设备</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/desktop-about.png" alt="Windows 关于与联系方式" />
+      <br /><sub>关于 · 作者信息 · 联系方式 · 运行环境</sub>
+    </td>
+  </tr>
+</table>
+
+### Android 手机端
+
+<div align="center">
+  <img src="docs/screenshots/android-home.png" width="260" alt="Android 手机端" />
+  <br /><sub>原生 Android · 匹配码连接 · 扫码配对 · 待发送文件区</sub>
+</div>
+
 ## 下载与安装
 
 当前版本：**v1.0.0**

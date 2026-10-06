@@ -13,7 +13,9 @@
 
 <br />
 
-![邻传品牌视觉](desktop/resources/installer-sidebar.bmp)
+<div align="center">
+  <img src="docs/branding/nearby-transfer-hero.png" width="100%" alt="邻传 Nearby Transfer 品牌宣传图" />
+</div>
 
 ## 产品简介
 

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "description": "邻传 Nearby Transfer · Windows 电脑端 (LTP/1)",
-  "author": "邻传 Nearby Transfer",
+  "author": "齐世有 <blacklaw@foxmail.com>",
+  "homepage": "https://linchuan.aeback.com",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
@@ -51,6 +52,10 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "language": 2052,
+      "installerLanguages": ["zh_CN"],
+      "displayLanguageSelector": false,
+      "license": "resources/license.txt",
       "createDesktopShortcut": true,
       "shortcutName": "邻传",
       "installerIcon": "resources/icon.ico",

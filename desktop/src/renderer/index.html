@@ -39,11 +39,16 @@
   <!-- 主体：左侧导航 + 右侧内容 -->
   <div class="body">
     <nav class="sidenav">
+      <div class="nav-label">连接与设备</div>
       <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>设备</button>
       <button class="nav-item" data-tab="pair"><span class="ni" data-icon="link"></span>配对</button>
+      <div class="nav-label">传输中心</div>
       <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span>传输</button>
+      <button class="nav-item" data-tab="received"><span class="ni" data-icon="inbox"></span>接收</button>
+      <div class="nav-label">记录与管理</div>
       <button class="nav-item" data-tab="history"><span class="ni" data-icon="history"></span>历史</button>
-      <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span>已信任</button>
+      <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span>历史设备</button>
+      <div class="nav-label">软件</div>
       <button class="nav-item" data-tab="about"><span class="ni" data-icon="info"></span>关于</button>
 
       <div class="side-foot">
@@ -107,7 +112,7 @@
               <div class="ic-chip" data-icon="send"></div>
               <div>
                 <h2>快速发送</h2>
-                <div class="card-desc">选择要发送的内容，点击目标设备，即可快速传输。</div>
+                <div class="card-desc">选择内容后，在下方选择目标设备即可发送，无需返回上方设备列表。</div>
               </div>
             </div>
           </div>
@@ -140,6 +145,18 @@
             <div class="picklist" id="pickList"><span class="muted">尚未选择任何内容</span></div>
             <div class="send-actions" style="display:flex;gap:10px;margin-top:12px">
               <button class="btn ghost small" id="btnClearPick"><span class="bi" data-icon="trash"></span>清空待发送</button>
+            </div>
+
+            <div class="quick-send-bar">
+              <div class="quick-send-target">
+                <span class="qs-label"><span class="bi" data-icon="send"></span>发送到</span>
+                <select class="input" id="quickTarget" aria-label="选择发送目标">
+                  <option value="">请先选择目标设备</option>
+                </select>
+              </div>
+              <button class="btn primary" id="btnQuickSend" disabled>
+                <span class="bi" data-icon="send"></span>发送
+              </button>
             </div>
 
             <div class="send-foot">
@@ -224,15 +241,32 @@
         </div>
       </section>
 
+      <!-- 接收 -->
+      <section class="tab" id="tab-received">
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="inbox"></div>
+              <div><h2>接收文件</h2><div class="card-desc">手机或其他设备发送到电脑的文件会在这里确认和查看。</div></div>
+            </div>
+            <button class="btn ghost small" id="btnOpenReceiveDir"><span class="bi" data-icon="folderOpen"></span>打开接收目录</button>
+          </div>
+          <div class="card-body">
+            <div id="receivedList"></div>
+            <div class="empty" id="receivedEmpty">暂无接收记录。收到文件时会弹出确认窗口。</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 历史 -->
       <section class="tab" id="tab-history">
         <div class="card">
           <div class="card-head">
             <div class="ch-left">
               <div class="ic-chip" data-icon="history"></div>
-              <div><h2>传输历史</h2></div>
+              <div><h2>传输历史</h2><div class="card-desc">查看、定位或删除历史传输记录。</div></div>
             </div>
-            <button class="btn ghost small" id="btnOpenSaveDir"><span class="bi" data-icon="folderOpen"></span>打开保存目录</button>
+            <div class="card-head-actions"><button class="btn ghost small danger" id="btnClearHistory"><span class="bi" data-icon="trash"></span>清空历史</button><button class="btn ghost small" id="btnOpenSaveDir"><span class="bi" data-icon="folderOpen"></span>打开保存目录</button></div>
           </div>
           <div class="card-body">
             <div class="hist-list" id="histList"></div>
@@ -241,18 +275,18 @@
         </div>
       </section>
 
-      <!-- 已信任 -->
+      <!-- 历史设备 -->
       <section class="tab" id="tab-trusted">
         <div class="card">
           <div class="card-head">
             <div class="ch-left">
               <div class="ic-chip" data-icon="shield"></div>
-              <div><h2>已信任设备</h2><div class="card-desc">这些设备已通过配对，可直接传输。撤销后需重新配对。</div></div>
+              <div><h2>历史设备</h2><div class="card-desc">最近配对过的设备，可快捷发送；删除后需要重新配对。</div></div>
             </div>
           </div>
           <div class="card-body">
             <ul class="devlist" id="trustedList"></ul>
-            <div class="empty" id="trustedEmpty">还没有已信任的设备。</div>
+            <div class="empty" id="trustedEmpty">还没有历史设备。</div>
           </div>
         </div>
       </section>
@@ -289,37 +323,36 @@
             <div class="card-body">
               <ul class="contact-list" id="contactList">
                 <li>
-                  <button class="contact-row" id="ctMail" data-copy="hi@lantransfer.app">
+                  <div class="contact-row static" id="ctAuthor">
+                    <span class="ct-ic" data-icon="user"></span>
+                    <span class="ct-body">
+                      <span class="ct-label">作者</span>
+                      <span class="ct-value">齐世有</span>
+                    </span>
+                  </div>
+                </li>
+                <li>
+                  <button class="contact-row" id="ctMail" data-mail="blacklaw@foxmail.com">
                     <span class="ct-ic" data-icon="inbox"></span>
                     <span class="ct-body">
                       <span class="ct-label">电子邮箱</span>
-                      <span class="ct-value">hi@lantransfer.app</span>
+                      <span class="ct-value">blacklaw@foxmail.com</span>
                     </span>
                     <span class="ct-act" data-icon="chevronRight"></span>
                   </button>
                 </li>
                 <li>
-                  <button class="contact-row" id="ctSite" data-copy="https://lantransfer.app">
+                  <button class="contact-row" id="ctSite" data-site="https://linchuan.aeback.com">
                     <span class="ct-ic" data-icon="wifi"></span>
                     <span class="ct-body">
                       <span class="ct-label">官方网站</span>
-                      <span class="ct-value">lantransfer.app</span>
+                      <span class="ct-value">linchuan.aeback.com</span>
                     </span>
                     <span class="ct-act" data-icon="chevronRight"></span>
                   </button>
                 </li>
-                <li>
-                  <button class="contact-row" id="ctWechat" data-copy="NearbyTransfer">
-                    <span class="ct-ic" data-icon="sparkle"></span>
-                    <span class="ct-body">
-                      <span class="ct-label">微信公众号</span>
-                      <span class="ct-value">NearbyTransfer</span>
-                    </span>
-                    <span class="ct-act" data-icon="copy"></span>
-                  </button>
-                </li>
               </ul>
-              <p class="contact-hint">点击邮箱或官网可直接唤起系统应用；微信公众号名点击即复制。</p>
+              <p class="contact-hint">点击邮箱或官网可直接唤起系统应用。</p>
             </div>
           </div>
 
@@ -394,6 +427,14 @@
         <label>协议信息</label>
         <div class="kv" id="setInfo"></div>
       </div>
+      <div class="field">
+        <label>局域网权限</label>
+        <div class="firewall-row">
+          <div class="kv" id="firewallStatus">正在检测防火墙权限…</div>
+          <button class="btn ghost small" id="btnFixFirewall">自动配置</button>
+        </div>
+        <div class="field-hint">仅允许专用/域网络访问邻传端口 53317，不开放公网。</div>
+      </div>
     </div>
 
     <div class="mpane" id="mpane-about">
@@ -408,24 +449,23 @@
         <div class="mini-sec-t">联系方式</div>
         <ul class="contact-list compact">
           <li>
-            <button class="contact-row" data-copy="hi@lantransfer.app" data-mail="hi@lantransfer.app">
+            <div class="contact-row static">
+              <span class="ct-ic" data-icon="user"></span>
+              <span class="ct-body"><span class="ct-label">作者</span><span class="ct-value">齐世有</span></span>
+            </div>
+          </li>
+          <li>
+            <button class="contact-row" data-mail="blacklaw@foxmail.com">
               <span class="ct-ic" data-icon="inbox"></span>
-              <span class="ct-body"><span class="ct-label">邮箱</span><span class="ct-value">hi@lantransfer.app</span></span>
+              <span class="ct-body"><span class="ct-label">邮箱</span><span class="ct-value">blacklaw@foxmail.com</span></span>
               <span class="ct-act" data-icon="chevronRight"></span>
             </button>
           </li>
           <li>
-            <button class="contact-row" data-copy="https://lantransfer.app" data-site="https://lantransfer.app">
+            <button class="contact-row" data-site="https://linchuan.aeback.com">
               <span class="ct-ic" data-icon="wifi"></span>
-              <span class="ct-body"><span class="ct-label">官网</span><span class="ct-value">lantransfer.app</span></span>
+              <span class="ct-body"><span class="ct-label">官网</span><span class="ct-value">linchuan.aeback.com</span></span>
               <span class="ct-act" data-icon="chevronRight"></span>
-            </button>
-          </li>
-          <li>
-            <button class="contact-row" data-copy="NearbyTransfer">
-              <span class="ct-ic" data-icon="sparkle"></span>
-              <span class="ct-body"><span class="ct-label">微信公众号</span><span class="ct-value">NearbyTransfer</span></span>
-              <span class="ct-act" data-icon="copy"></span>
             </button>
           </li>
         </ul>

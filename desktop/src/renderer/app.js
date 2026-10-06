@@ -17,6 +17,7 @@ const S = {
   history: [],
   sessions: [],
   transfers: new Map(), // transferId -> { ...记录, sessionId }
+  received: [],
   picks: [],            // 待发送的本地路径
   pendingOffer: null,
   scanTimer: null,
@@ -125,6 +126,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     if (tab === 'pair') refreshQr();
     if (tab === 'trusted') renderTrusted();
     if (tab === 'history') renderHistory();
+    if (tab === 'received') renderReceived();
     if (tab === 'about') renderAbout();
   });
 });
@@ -160,16 +162,7 @@ async function loadSelf() {
 function renderDevices() {
   const list = $('deviceList');
   const empty = $('deviceEmpty');
-  // 过滤掉自己
-  const liveSessions = (S.sessions || []).filter((s) => s.device && s.device.deviceId).map((s) => ({
-    ...s.device,
-    ip: s.remote || s.device.ip || '',
-    port: s.device.port || 53317,
-    _connected: true,
-  }));
-  const items = [...S.devices, ...liveSessions]
-    .filter((d) => d.deviceId !== (S.self && S.self.deviceId))
-    .filter((d, i, all) => all.findIndex((x) => x.deviceId === d.deviceId) === i);
+  const items = getAvailableDevices();
 
   if (!items.length) {
     list.innerHTML = '';
@@ -212,6 +205,19 @@ function renderDevices() {
       sendToDevice(dev);
     });
   });
+  renderQuickTargets();
+}
+
+function getAvailableDevices() {
+  const liveSessions = (S.sessions || []).filter((s) => s.device && s.device.deviceId).map((s) => ({
+    ...s.device,
+    ip: s.remote || s.device.ip || '',
+    port: s.device.port || 53317,
+    _connected: true,
+  }));
+  return [...S.devices, ...liveSessions]
+    .filter((d) => d.deviceId !== (S.self && S.self.deviceId))
+    .filter((d, i, all) => all.findIndex((x) => x.deviceId === d.deviceId) === i);
 }
 
 function esc(s) {
@@ -231,6 +237,14 @@ $('btnPickFolder').addEventListener('click', async () => {
   if (paths.length) { S.picks.push(...paths); renderPicks(); }
 });
 $('btnClearPick').addEventListener('click', () => { S.picks = []; renderPicks(); });
+
+$('quickTarget').addEventListener('change', () => renderQuickTargets());
+$('btnQuickSend').addEventListener('click', async () => {
+  const id = $('quickTarget').value;
+  const dev = getAvailableDevices().find((d) => d.deviceId === id);
+  if (!dev) { toast('请先选择在线目标设备', 'err'); return; }
+  await sendToDevice(dev);
+});
 
 // 粘贴内容：读取剪贴板文本 → 填入文本框（文件类剪贴板由主进程尝试）
 $('btnPaste').addEventListener('click', async () => {
@@ -264,6 +278,7 @@ function renderPicks() {
   const el = $('pickList');
   if (!S.picks.length) {
     el.innerHTML = '<span class="muted">尚未选择任何内容</span>';
+    renderQuickTargets();
     return;
   }
   el.innerHTML = S.picks.map((p, i) => {
@@ -282,6 +297,21 @@ function renderPicks() {
   el.querySelectorAll('[data-rm]').forEach((b) => {
     b.addEventListener('click', () => { S.picks.splice(+b.dataset.rm, 1); renderPicks(); });
   });
+  renderQuickTargets();
+}
+
+function renderQuickTargets() {
+  const select = $('quickTarget');
+  const button = $('btnQuickSend');
+  if (!select || !button) return;
+  const current = select.value;
+  const items = getAvailableDevices();
+  select.innerHTML = items.length
+    ? '<option value="">请选择在线设备</option>' + items.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name || d.deviceId)}${d.type === 'mobile' ? ' · 手机' : ' · 电脑'}</option>`).join('')
+    : '<option value="">暂无在线设备，请先扫描</option>';
+  if (items.some((d) => d.deviceId === current)) select.value = current;
+  button.disabled = !(S.picks.length && select.value && items.some((d) => d.deviceId === select.value));
+  fillIcons(select.parentElement.parentElement);
 }
 
 async function sendToDevice(dev) {
@@ -513,6 +543,7 @@ function renderHistory() {
         <div class="hist-actions">
           ${openable ? `<button class="btn ghost small" data-open="${esc(first.path)}"><span class="bi" data-icon="folderOpen"></span>打开</button>
                         <button class="btn ghost small" data-folder="${esc(first.path)}"><span class="bi" data-icon="scan"></span>定位</button>` : ''}
+          <button class="btn ghost small danger" data-delete-history="${esc(h.transferId)}"><span class="bi" data-icon="trash"></span>删除</button>
         </div>
       </div>`;
   }).join('');
@@ -522,14 +553,25 @@ function renderHistory() {
     b.addEventListener('click', () => api.openPath(b.dataset.open)));
   list.querySelectorAll('[data-folder]').forEach((b) =>
     b.addEventListener('click', () => api.showInFolder(b.dataset.folder)));
+  list.querySelectorAll('[data-delete-history]').forEach((b) => b.addEventListener('click', async () => {
+    await api.deleteHistory(b.dataset.deleteHistory);
+    S.history = S.history.filter((h) => h.transferId !== b.dataset.deleteHistory);
+    renderHistory();
+    toast('已删除历史记录', 'ok');
+  }));
 }
+
+$('btnClearHistory').addEventListener('click', async () => {
+  if (!S.history.length) return toast('暂无历史记录');
+  await api.clearHistory(); S.history = []; renderHistory(); toast('历史记录已清空', 'ok');
+});
 
 $('btnOpenSaveDir').addEventListener('click', async () => {
   const self = S.self || (await api.getSelf());
   api.openPath(self.saveDir);
 });
 
-// ── 已信任设备 ───────────────────────────────────────
+// ── 历史设备 ─────────────────────────────────────────
 
 function renderTrusted() {
   const list = $('trustedList');
@@ -540,14 +582,15 @@ function renderTrusted() {
     <li class="dev" data-id="${esc(t.deviceId)}">
       <div class="dev-icon ${t.type === 'mobile' ? 'mobile' : 'desktop'}">${window.Icons.icon(t.type === 'mobile' ? 'mobile' : 'desktop', { size: 20, sw: 1.6 })}</div>
       <div class="dev-main">
-        <div class="dev-name">${esc(t.name || t.deviceId)}<span class="tag ok">已信任</span></div>
+        <div class="dev-name">${esc(t.name || t.deviceId)}<span class="tag ok">已配对</span></div>
         <div class="dev-meta">
           <span>指纹 ${esc(t.fingerprint || '-')}</span>
           <span>最近连接 ${esc(fmt.time(t.lastSeenAt))}</span>
         </div>
       </div>
       <div class="dev-actions">
-        <button class="btn ghost small danger" data-untrust="${esc(t.deviceId)}"><span class="bi" data-icon="trash"></span>撤销信任</button>
+        <button class="btn small primary" data-quick-send="${esc(t.deviceId)}"><span class="bi" data-icon="send"></span>快捷发送</button>
+        <button class="btn ghost small danger" data-untrust="${esc(t.deviceId)}"><span class="bi" data-icon="trash"></span>删除设备</button>
       </div>
     </li>`).join('');
   fillIcons(list);
@@ -558,6 +601,12 @@ function renderTrusted() {
       toast('已撤销信任，该设备需重新配对', 'ok');
     });
   });
+  list.querySelectorAll('[data-quick-send]').forEach((b) => b.addEventListener('click', () => {
+    const id = b.dataset.quickSend;
+    const dev = S.devices.find((d) => d.deviceId === id) || (S.sessions.find((s) => s.device && s.device.deviceId === id) || {}).device;
+    if (!dev) { toast('设备当前不在线，请先扫描或连接', 'err'); return; }
+    sendToDevice(dev);
+  }));
 }
 
 // ── 关于页 ───────────────────────────────────────────
@@ -589,13 +638,12 @@ async function renderAbout() {
   }
 }
 
-/** 联系方式的点击行为：邮箱/官网唤起系统应用，公众号复制到剪贴板。 */
+/** 联系方式的点击行为：邮箱唤起邮件客户端，官网唤起浏览器；失败则复制到剪贴板。 */
 function bindContactRows() {
-  document.querySelectorAll('.contact-row').forEach((row) => {
+  document.querySelectorAll('.contact-row:not(.static)').forEach((row) => {
     row.addEventListener('click', async () => {
       const mail = row.dataset.mail;
       const site = row.dataset.site;
-      const copy = row.dataset.copy;
 
       if (mail) {
         const r = await api.openExternal('mailto:' + mail);
@@ -607,11 +655,6 @@ function bindContactRows() {
         const r = await api.openExternal(site);
         if (r && r.ok) toast('已在浏览器打开官网', 'ok');
         else { await api.copyText(site); toast('网址已复制：' + site, 'ok'); }
-        return;
-      }
-      if (copy) {
-        await api.copyText(copy);
-        toast('已复制：' + copy, 'ok');
       }
     });
   });
@@ -634,6 +677,8 @@ function bindModalTabs() {
 function showOffer(offer) {
   S.pendingOffer = offer;
   const devName = (offer.device && offer.device.name) || '未知设备';
+  S.received = [{ name: `${offer.files.length} 个待接收文件`, from: devName, size: offer.totalBytes || 0, status: '等待确认', at: Date.now() }, ...(S.received || [])];
+  goto('received');
   $('offerFrom').textContent = `来自 ${devName}（${(offer.device && offer.device.type) === 'mobile' ? '手机' : '电脑'}）`;
 
   $('offerFiles').innerHTML = offer.files.slice(0, 60).map((f) => `
@@ -650,8 +695,26 @@ function showOffer(offer) {
     <span class="muted">将保存到 ${esc(offer.saveDir || '')}</span>`;
 
   $('offerModal').hidden = false;
+  renderReceived();
   notify('邻传收到文件', `${devName} 请求发送 ${offer.files.length} 个文件`);
 }
+
+function renderReceived() {
+  const list = $('receivedList');
+  if (!list) return;
+  const items = S.received || [];
+  $('receivedEmpty').hidden = items.length > 0;
+  list.innerHTML = items.slice(0, 30).map((x) => `
+    <div class="hist">
+      <div class="hist-main"><div class="hist-name">${esc(x.name)}</div><div class="hist-meta">${esc(x.from)} · ${esc(x.status)} · ${fmt.time(x.at)}</div></div>
+      <div class="hist-size">${fmt.bytes(x.size || 0)}</div>
+    </div>`).join('');
+}
+
+$('btnOpenReceiveDir').addEventListener('click', async () => {
+  const self = S.self || (await api.getSelf());
+  api.openPath(self.saveDir);
+});
 
 $('btnAcceptOffer').addEventListener('click', async () => {
   const o = S.pendingOffer;
@@ -669,6 +732,7 @@ $('btnRejectOffer').addEventListener('click', async () => {
   $('offerModal').hidden = true;
   await api.rejectOffer(o.sessionId, o.transferId, 'user_denied');
   S.pendingOffer = null;
+  renderReceived();
   toast('已拒绝接收');
 });
 
@@ -683,10 +747,26 @@ $('btnSettings').addEventListener('click', async () => {
     设备指纹：<code>${esc(self.fingerprint || '-')}</code><br>
     监听端口：<code>${self.port}</code> · 协议 <code>${esc(self.protocol)}</code><br>
     局域网地址：<code>${esc(self.lanIPs.map((x) => x.address).join(', ') || self.ip)}</code>`;
+  if (!$('firewallStatus').dataset.ready) {
+    $('firewallStatus').textContent = '启动时自动配置；如被系统拦截，请点击“自动配置”并允许管理员权限。';
+  }
   // 每次打开都回到「常规」页签，避免上次停留在「关于」让用户以为设置项丢了
   document.querySelectorAll('.mtab').forEach((b) => b.classList.toggle('active', b.dataset.mtab === 'general'));
   document.querySelectorAll('.mpane').forEach((p) => p.classList.toggle('active', p.id === 'mpane-general'));
   $('settingsModal').hidden = false;
+});
+
+$('btnFixFirewall').addEventListener('click', async () => {
+  $('firewallStatus').textContent = '正在请求 Windows 管理员权限…';
+  const r = await api.ensureFirewall();
+  if (r && r.ok) {
+    $('firewallStatus').textContent = '已允许局域网访问端口 53317';
+    $('firewallStatus').dataset.ready = '1';
+    toast('局域网权限已配置', 'ok');
+  } else {
+    $('firewallStatus').textContent = '未完成配置，请在 Windows UAC 中允许操作后重试。';
+    toast('防火墙权限未配置', 'err');
+  }
 });
 
 $('btnCloseSettings').addEventListener('click', () => { $('settingsModal').hidden = true; });
@@ -743,6 +823,17 @@ function bindEvents() {
   api.onWinState(({ maximized }) => setWinMaxIcon(!!maximized));
 
   api.onEvent(({ ev, payload }) => {
+    if (ev === 'firewall:status') {
+      const holder = $('firewallStatus');
+      if (holder) {
+        holder.textContent = payload && payload.ok
+          ? '已允许局域网访问端口 53317'
+          : '局域网权限未配置，请在设置中点击“自动配置”。';
+        holder.dataset.ready = payload && payload.ok ? '1' : '';
+      }
+      if (payload && payload.ok && payload.changed) toast('已自动配置局域网权限', 'ok');
+      return;
+    }
     switch (ev) {
       case 'discovery:scan:progress':
         if (payload && payload.total) {
@@ -782,6 +873,10 @@ function bindEvents() {
           if (ev === 'transfer:complete' && t.status === 'done') {
             toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
             notify('邻传传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
+            if (t.direction === 'receive') {
+              (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
+              renderReceived();
+            }
           }
         }
         break;

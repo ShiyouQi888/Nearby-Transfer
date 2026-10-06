@@ -244,15 +244,12 @@ class Discovery extends EventEmitter {
       ips = expandRange(rangeExpr);
       if (!ips.length) throw new Error(`无法解析网段表达式：${rangeExpr}`);
     } else {
-      // 默认扫描本机所在网段 /24
-      for (const { address, netmask } of listLocalIPv4()) {
-        const { start, end } = subnetRange(address, netmask || '255.255.255.0');
-        const startSeg = start.split('.').slice(0, 3).join('.');
-        const endSeg = end.split('.').slice(0, 3).join('.');
-        if (startSeg !== endSeg) { ips.push(...rangeList(startSeg, 1, 254)); break; }
-        const from = +start.split('.')[3], to = +end.split('.')[3];
-        ips.push(...rangeList(startSeg, from, to));
+      // 默认扫描每个本机网卡所在的 /24，避免 /16 等掩码被错误截成 192.168.0.x。
+      for (const { address } of listLocalIPv4()) {
+        const parts = address.split('.');
+        if (parts.length === 4) ips.push(...rangeList(parts.slice(0, 3).join('.'), 1, 254));
       }
+      ips = [...new Set(ips)];
       if (!ips.length) ips = rangeList('192.168.1', 1, 254);
     }
 

@@ -292,10 +292,10 @@ python scripts/gen-fonts.py      # 或 cd desktop && npm run gen:fonts
 
 - **应用信息**：logo、中文名「邻传 / Nearby Transfer」、简介、版本号（读 `desktop/package.json` 的 `version`）、协议号 `LTP/1`
 - **运行环境**：版本 / 协议 / Electron + Chromium 版本 / 操作系统+架构
-- **联系方式**（3 项，点击可用）：
-  - 电子邮箱 `hi@lantransfer.app` → 唤起系统邮件客户端（`mailto:`）
-  - 官网 `lantransfer.app` → 用系统默认浏览器打开
-  - 微信公众号 `NearbyTransfer` → 一键复制到剪贴板并提示
+- **联系方式**：
+  - 作者 `齐世有` → 纯展示信息，不可点击
+  - 电子邮箱 `blacklaw@foxmail.com` → 唤起系统邮件客户端（`mailto:`）
+  - 官网 `linchuan.aeback.com` → 用系统默认浏览器打开
 - **版权信息**：`© 2026 邻传 Nearby Transfer · 保留所有权利` + 思源黑体 SIL OFL 1.1 授权说明
 
 外链通过主进程 `ltp:openExternal` 打开，并做了**协议白名单**（仅放行 `http/https/mailto`），`file://`、`javascript:` 等一律拒绝，避免渲染进程被诱导执行本地程序。

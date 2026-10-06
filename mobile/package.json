@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "description": "邻传 Nearby Transfer · 手机端 (Android, LTP/1)",
+  "author": "齐世有 <blacklaw@foxmail.com>",
+  "homepage": "https://linchuan.aeback.com",
   "type": "module",
   "scripts": {
     "gen:protocol": "node ../scripts/gen-protocol-mjs.js",

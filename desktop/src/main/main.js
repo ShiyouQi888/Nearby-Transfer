@@ -26,6 +26,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const P = require('../../../shared/protocol.js');
 const { Discovery, listLocalIPv4 } = require('./discovery.js');
 const { TransferServer } = require('./server.js');
@@ -110,6 +111,56 @@ let discovery = null;
 let server = null;
 let selfDevice = null;
 
+const FIREWALL_RULES = [
+  { name: 'Nearby Transfer TCP 53317', protocol: 'TCP' },
+  { name: 'Nearby Transfer UDP 53317', protocol: 'UDP' },
+];
+
+function execFileAsync(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) { error.stdout = stdout; error.stderr = stderr; reject(error); return; }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function firewallRuleExists(name) {
+  if (process.platform !== 'win32') return true;
+  try {
+    await execFileAsync('netsh.exe', ['advfirewall', 'firewall', 'show', 'rule', `name=${name}`]);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 首次启动时自动创建局域网入站规则。规则只开放专用/域网络，
+ * 不会放开公网；如果系统需要管理员权限，会触发一次 UAC 确认。
+ */
+async function ensureFirewallRules() {
+  if (process.platform !== 'win32') return { ok: true, changed: false, reason: 'not_windows' };
+  const missing = [];
+  for (const rule of FIREWALL_RULES) {
+    if (!(await firewallRuleExists(rule.name))) missing.push(rule);
+  }
+  if (!missing.length) return { ok: true, changed: false, status: 'ready' };
+
+  const commands = missing.map((rule) =>
+    `netsh advfirewall firewall add rule name="${rule.name}" dir=in action=allow protocol=${rule.protocol} localport=${P.PORT} profile=private,domain enable=yes`
+  ).join(' && ');
+  // 由 PowerShell 仅负责触发一次管理员 UAC，真正的规则由提升后的 cmd 执行。
+  const script = `$p = Start-Process -FilePath 'cmd.exe' -Verb RunAs -ArgumentList @('/d','/s','/c',${JSON.stringify(commands)}) -Wait -PassThru; exit $p.ExitCode;`;
+  try {
+    await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    const ready = (await Promise.all(FIREWALL_RULES.map((r) => firewallRuleExists(r.name)))).every(Boolean);
+    return ready ? { ok: true, changed: true, status: 'ready' } : { ok: false, reason: 'rule_not_found' };
+  } catch (error) {
+    return { ok: false, reason: 'permission_denied', message: String(error.message || error) };
+  }
+}
+
 function buildSelf() {
   const ips = listLocalIPv4();
   selfDevice = {
@@ -186,6 +237,11 @@ function startServices() {
   ['device:up', 'device:down', 'device:update', 'scan:progress', 'scan:done', 'started', 'error']
     .forEach((ev) => discovery.on(ev, (payload) => pushToRenderer('ltp:event', { ev: 'discovery:' + ev, payload })));
   discovery.start();
+
+  // 服务启动后自动检查防火墙；已有规则不会重复弹出 UAC。
+  ensureFirewallRules().then((payload) => {
+    pushToRenderer('ltp:event', { ev: 'firewall:status', payload });
+  });
 
   // 定期把设备列表推给 UI
   setInterval(() => {
@@ -324,9 +380,20 @@ function registerIpc() {
     port: P.PORT,
   }));
 
+  ipcMain.handle('ltp:ensureFirewall', async () => ensureFirewallRules());
+
   ipcMain.handle('ltp:getDevices', () => (discovery ? discovery.list() : []));
   ipcMain.handle('ltp:getTrusted', () => server.listTrusted());
   ipcMain.handle('ltp:getHistory', () => (STORE.history || []).slice(0, 200));
+  ipcMain.handle('ltp:deleteHistory', (e, transferId) => {
+    const id = String(transferId || '');
+    const before = STORE.history || [];
+    STORE.history = before.filter((h) => h.transferId !== id);
+    saveStore();
+    pushToRenderer('ltp:history', STORE.history.slice(0, 100));
+    return { ok: STORE.history.length !== before.length };
+  });
+  ipcMain.handle('ltp:clearHistory', () => { STORE.history = []; saveStore(); pushToRenderer('ltp:history', []); return { ok: true }; });
   ipcMain.handle('ltp:getSessions', () => (server ? server.allSessions() : []));
   ipcMain.handle('ltp:getTransfers', () => (server ? server.listTransfers() : []));
 

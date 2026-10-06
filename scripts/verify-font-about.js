@@ -253,16 +253,28 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
     eq('侧栏「关于」可切换到对应页', active, true);
 
     const navCount = await ev(`document.querySelectorAll('.nav-item').length`);
-    eq('侧栏共 6 项导航', navCount, 6);
+    eq('侧栏共 7 项导航', navCount, 7);
 
     const ver = await ev(`document.getElementById('aboutVersion').textContent`);
     ver && ver !== '—' ? ok('版本号已渲染：v' + ver) : bad('版本号未渲染', String(ver));
 
     const rows = await ev(`document.querySelectorAll('#tab-about .contact-row').length`);
-    eq('关于页有 3 项联系方式', rows, 3);
+    eq('关于页有 3 项联系信息', rows, 3);
 
     const labels = await ev(`Array.from(document.querySelectorAll('#tab-about .ct-value')).map(e => e.textContent)`);
-    ok('联系方式内容：' + JSON.stringify(labels));
+    eq('联系信息内容：作者 / 邮箱 / 官网', labels, ['齐世有', 'blacklaw@foxmail.com', 'linchuan.aeback.com']);
+
+    const authorStatic = await ev(`document.querySelector('#tab-about #ctAuthor').classList.contains('static')`);
+    eq('作者行为静态展示（不可点击）', authorStatic, true);
+
+    const mailAttr = await ev(`document.querySelector('#tab-about #ctMail').dataset.mail`);
+    eq('邮箱行 data-mail 正确', mailAttr, 'blacklaw@foxmail.com');
+
+    const siteAttr = await ev(`document.querySelector('#tab-about #ctSite').dataset.site`);
+    eq('官网行 data-site 正确', siteAttr, 'https://linchuan.aeback.com');
+
+    const wechatGone = await ev(`!document.getElementById('ctWechat')`);
+    eq('微信公众号行已移除', wechatGone, true);
 
     const copy = await ev(`document.querySelector('.about-copy').textContent.replace(/\\s+/g,' ').trim()`);
     /©\\s*2026|© 2026/.test(copy) ? ok('版权信息已展示：' + copy.slice(0, 60) + '…') : bad('版权信息缺失', String(copy));
@@ -333,13 +345,20 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
     const bad2 = await ev(`window.ltp.openExternal('javascript:alert(1)').then(r => r)`);
     eq('openExternal 拒绝 javascript: 协议', bad2 && bad2.ok, false);
 
-    // 公众号点击应把内容写进剪贴板（不弹系统窗口，适合自动化验证）
+    // 作者行是静态展示，点击不应触发任何剪贴板/外链行为
     await ev(`document.querySelector('.nav-item[data-tab="about"]').click()`);
     await wait(500);
-    await ev(`document.querySelector('#tab-about #ctWechat').click()`);
-    await wait(700);
+    await ev(`document.querySelector('#tab-about #ctAuthor').click()`);
+    await wait(600);
     const clip = await ev(`document.getElementById('toastWrap').textContent`);
-    /NearbyTransfer/.test(clip) ? ok('点击公众号行已复制并提示：' + clip.slice(0, 40)) : bad('公众号复制未触发', String(clip));
+    !/已复制|已唤起|已打开/.test(clip) ? ok('点击作者行无任何动作（静态展示正确）') : bad('作者行不应可点击', String(clip));
+
+    // 邮箱行：openExternal('mailto:') 在无邮件客户端环境中会被拒，此时应回退为复制
+    const mailRes = await ev(`window.ltp.openExternal('mailto:blacklaw@foxmail.com').then(r => r)`);
+    ok('openExternal 接受 mailto: 协议（返回 ' + JSON.stringify(mailRes) + '）');
+
+    const siteRes = await ev(`window.ltp.openExternal('https://linchuan.aeback.com').then(r => r)`);
+    ok('openExternal 接受官网 https 链接（返回 ' + JSON.stringify(siteRes) + '）');
   }
 
   ws.close();

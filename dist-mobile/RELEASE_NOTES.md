@@ -21,7 +21,15 @@
 - 翡翠绿设计系统，统一内联 SVG 图标（电脑端 53 个，无 emoji）
 - **无边框窗口 + 自绘标题栏**，关闭 / 最小化 / 最大化还原完全融入品牌配色
 - 内嵌**思源黑体可变字重子集**（源字体 16.9 MB → 1.0 MB，保留 100–900 完整字重轴），正文基准 450 字重
-- 侧栏「关于」页 + 设置弹窗「关于」页签双入口：运行环境、邮箱 / 官网 / 微信公众号、版权与字体授权说明（思源黑体 SIL OFL 1.1）
+- 侧栏「关于」页 + 设置弹窗「关于」页签双入口：作者、邮箱 / 官网、运行环境、版权与字体授权说明（思源黑体 SIL OFL 1.1）
+
+## 联系我们
+
+| 项目 | 内容 |
+|---|---|
+| 作者 | 齐世有 |
+| 电子邮箱 | blacklaw@foxmail.com |
+| 官网 | <https://linchuan.aeback.com> |
 
 ## 技术栈
 
@@ -49,7 +57,7 @@
 ## 校验
 
 ```
-Nearby-Transfer-Setup-1.0.0.exe     sha256 93656c5ea17cdd0028f51c2c0d04c08960cf573ce5696de085848b3fb010b566
+Nearby-Transfer-Setup-1.0.0.exe     sha256 cd99f581f5bab11cb1210d3705f446009eea70c28b8a2eaf75702c75cf5bceb7
 Nearby-Transfer-v1.0.0-debug.apk    sha256 7fddb4df9835c5bc9e055183c8686ada1e9f2b7ccecce331259dc72bf65eda28
 ```
 

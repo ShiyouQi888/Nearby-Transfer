@@ -278,6 +278,8 @@ input, select { user-select: text; }
   font-size: 14px; font-weight: 600;
   transition: background .16s var(--ease), color .16s var(--ease);
 }
+.nav-label { margin: 18px 12px 7px; color: var(--ds-text-muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.nav-label:first-child { margin-top: 2px; }
 .nav-item .ni { color: var(--text-mute); transition: color .16s var(--ease); }
 .nav-item:hover { background: var(--card); color: var(--text); }
 .nav-item:hover .ni { color: var(--text-dim); }
@@ -525,6 +527,12 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none;
 .pick-item { display: flex; align-items: center; gap: 11px; font-size: 12.5px; padding: 3px 2px; }
 .pick-item .pi-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .pick-item .pi-size { color: var(--text-mute); font-size: 11.5px; max-width: 44%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-send-bar { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 12px; border: 1px solid rgba(7,193,96,.24); border-radius: var(--ds-radius-md); background: rgba(7,193,96,.055); }
+.quick-send-target { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.quick-send-target .input { height: 42px; min-width: 0; }
+.qs-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ds-text-secondary); font-size: 13px; font-weight: 650; white-space: nowrap; }
+.qs-label .bi { color: var(--ds-brand-bright); }
+@media (max-width: 700px) { .quick-send-bar { align-items: stretch; flex-direction: column; } .quick-send-target { width: 100%; } .quick-send-bar > .btn { width: 100%; } }
 
 /* ── 设备列表 ─────────────────────────────────────────── */
 
@@ -842,6 +850,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .card:last-child { margin-bottom: 0; }
 .card-head { gap: 16px; }
+.card-head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.firewall-row { display: flex; align-items: center; gap: 10px; }
+.firewall-row .kv { flex: 1; min-height: 40px; display: flex; align-items: center; }
+.field-hint { margin-top: 7px; color: var(--ds-text-muted); font-size: 12px; line-height: 1.5; }
 .card-head .ch-left { gap: 12px; }
 .card-head h2 { font-size: 20px; line-height: 28px; font-weight: 670; color: var(--ds-text); }
 .card-desc { margin-top: 4px; color: var(--ds-text-muted); font-size: 13px; line-height: 20px; }
@@ -1010,6 +1022,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-color: var(--ds-border-strong);
 }
 .contact-row:active { transform: translateY(1px); }
+
+/* 静态信息行（如「作者」）：不可点击，无悬停反馈与按下位移 */
+.contact-row.static { cursor: default; }
+.contact-row.static:hover { background: var(--ds-surface, rgba(255,255,255,.03)); border-color: var(--ds-border); }
+.contact-row.static:active { transform: none; }
 
 .ct-ic {
   width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;

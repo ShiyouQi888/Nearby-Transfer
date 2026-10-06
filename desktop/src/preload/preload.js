@@ -25,8 +25,11 @@ contextBridge.exposeInMainWorld('ltp', {
   getDevices: () => invoke('ltp:getDevices'),
   getTrusted: () => invoke('ltp:getTrusted'),
   getHistory: () => invoke('ltp:getHistory'),
+  deleteHistory: (transferId) => invoke('ltp:deleteHistory', transferId),
+  clearHistory: () => invoke('ltp:clearHistory'),
   getSessions: () => invoke('ltp:getSessions'),
   getTransfers: () => invoke('ltp:getTransfers'),
+  ensureFirewall: () => invoke('ltp:ensureFirewall'),
 
   // ── 发现
   scan: (range) => invoke('ltp:scan', { range }),

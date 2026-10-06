@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────
+# 邻传 Nearby Transfer · 仓库忽略规则
+# ─────────────────────────────────────────────
+
+# 依赖
+node_modules/
+.pnpm-store/
+
+# npm 隔离缓存（本机沙箱用，不入库）
+_npmcache/
+
+# ── 构建产物 ──────────────────────────────
+# Electron 打包输出（安装包走 GitHub Releases，不提交历史）
+desktop/release*/
+desktop/out/
+desktop/dist/
+
+# Vite 构建产物
+mobile/dist/
+mobile/.vite/
+
+# 临时构建文件
+*.timestamp-*.mjs
+*.nsis.7z
+
+# ── 交付目录 ──────────────────────────────
+# 发行版由 GitHub Releases 托管，避免仓库承载大二进制
+dist-desktop/
+dist-mobile/
+
+# ── 开发用截图与临时目录 ──────────────────
+_shots/
+_cdp_prof*/
+*.log
+
+# ── 环境与编辑器 ──────────────────────────
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ── 密钥（永不入库） ──────────────────────
+*.jks
+*.keystore
+*.p12
+*.pfx
+google-services.json
+
+# node:sqlite 本地数据库
+*.db
+*.db-journal
+*.db-wal

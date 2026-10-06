@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="theme-color" content="#0d1215" />
+<meta name="description" content="邻传 Nearby Transfer · 局域网内手机与电脑高速互传文件" />
+<link rel="icon" type="image/png" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>邻传 · Nearby Transfer</title>
+<link rel="stylesheet" href="./src/ui/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="tb-left">
+      <span class="tb-logo"></span>
+      <div>
+        <div class="tb-title">邻传</div>
+        <div class="tb-sub" id="selfName">我的手机</div>
+      </div>
+    </div>
+    <div class="tb-actions">
+      <span class="connection-badge" id="connectionBadge"><i></i>未连接</span>
+      <button class="icon-btn" id="btnSettings" aria-label="设置" data-icon="settings"></button>
+    </div>
+  </header>
+
+  <!-- 未连接：连接引导 -->
+  <section class="screen active" id="screen-connect">
+    <div class="hero">
+      <div class="hero-icon" data-icon="wifi"></div>
+      <h2>连接电脑</h2>
+      <p>请确保手机与电脑连接<b>同一个 Wi-Fi</b>，然后任选一种方式连接。</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="qrScan"></span>扫一扫</div>
+      <button class="btn primary block" id="btnScanQr">
+        <span class="btn-ico" data-icon="qrScan"></span> 扫描电脑上的二维码
+      </button>
+      <div class="hint">扫描配对最快，二维码里已包含 IP、端口和配对令牌。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="key"></span>输入 6 位匹配码</div>
+      <div class="code-input">
+        <input id="codeInput" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
+      </div>
+      <button class="btn block" id="btnUseCode"><span class="btn-ico" data-icon="key"></span>用匹配码连接</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="globe"></span>手动指定地址</div>
+      <div class="row">
+        <input class="input" id="ipInput" placeholder="192.168.1.23" inputmode="decimal" />
+        <input class="input port" id="portInput" value="53317" inputmode="numeric" />
+      </div>
+      <button class="btn block" id="btnManual"><span class="btn-ico" data-icon="arrowRight"></span>直接连接</button>
+      <div class="hint">不确定电脑 IP？可在电脑端「配对」页查看。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="radar"></span>扫描局域网</div>
+      <div class="row">
+        <input class="input" id="rangeInput" placeholder="192.168.1.1-254" inputmode="decimal" />
+        <button class="btn" id="btnScanNet"><span class="btn-ico" data-icon="radar"></span>扫描</button>
+      </div>
+      <div class="scan-bar" id="scanBar" hidden>
+        <div class="scan-fill" id="scanFill"></div>
+        <span id="scanText">扫描中…</span>
+      </div>
+      <ul class="found-list" id="foundList"></ul>
+      <div class="hint" id="scanHint">扫描会逐个探测该网段上的电脑端。</div>
+    </div>
+
+    <div class="card" id="trustedCard" hidden>
+      <div class="card-title"><span class="ct-ic" data-icon="lock"></span>已配对的电脑</div>
+      <ul class="found-list" id="trustedList"></ul>
+      <div class="hint">点一下即可直接连接，无需重新配对。</div>
+    </div>
+  </section>
+
+  <!-- 主界面：已连接 -->
+  <section class="screen" id="screen-main">
+    <div class="peer-card" id="peerCard">
+      <div class="peer-icon" data-icon="desktop"></div>
+      <div class="peer-main">
+        <div class="peer-name" id="peerName">—</div>
+        <div class="peer-meta" id="peerMeta">—</div>
+      </div>
+      <span class="dot-ok" id="peerDot"></span>
+    </div>
+
+    <!-- 进行中传输 -->
+    <div id="activeWrap"></div>
+
+    <!-- 发送区 -->
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="send"></span>发送到电脑</div>
+      <div class="send-grid">
+        <button class="tile" data-pick="image"><span class="tile-ic" data-icon="image"></span>图片</button>
+        <button class="tile" data-pick="video"><span class="tile-ic" data-icon="video"></span>视频</button>
+        <button class="tile" data-pick="doc"><span class="tile-ic" data-icon="doc"></span>文档</button>
+        <button class="tile" data-pick="any"><span class="tile-ic" data-icon="clip"></span>其他文件</button>
+      </div>
+      <div class="pick-preview" id="pickPreview"></div>
+      <button class="btn primary block" id="btnSend" disabled>选择要发送的内容</button>
+    </div>
+
+    <!-- 接收的文件 -->
+    <div class="card">
+      <div class="card-title"><span class="ct-ic" data-icon="inbox"></span>最近接收</div>
+      <ul class="recv-list" id="recvList"></ul>
+      <div class="empty" id="recvEmpty">还没有接收过文件。</div>
+    </div>
+
+    <button class="btn ghost block danger" id="btnDisconnect" style="margin-top:4px"><span class="btn-ico" data-icon="close"></span>断开连接</button>
+  </section>
+
+  <!-- 设置 -->
+  <div class="sheet-mask" id="sheetMask" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-title"><span class="st-ic" data-icon="settings"></span>设置</div>
+      <div class="field">
+        <label>本机名称（电脑端会看到这个名称）</label>
+        <input class="input" id="setName" maxlength="24" />
+      </div>
+      <div class="field">
+        <label>设备 ID</label>
+        <div class="kv" id="setDeviceId"></div>
+      </div>
+      <div class="field">
+        <label>传输通道</label>
+        <div class="kv" id="setChannel">—</div>
+      </div>
+      <div class="field permission-field">
+        <label>设备权限</label>
+        <div class="permission-row">
+          <div>
+            <div class="permission-title"><span class="permission-dot" id="cameraPermissionDot"></span>摄像头</div>
+            <div class="kv" id="cameraPermissionText">用于扫描电脑二维码，仅在点击扫码时申请。</div>
+          </div>
+          <button class="btn small" id="btnCheckCamera" type="button">检查权限</button>
+        </div>
+        <div class="permission-note">文件通过系统文件选择器读取，不申请通讯录、定位或后台位置权限。</div>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn ghost" id="btnCloseSheet">关闭</button>
+        <button class="btn primary" id="btnSaveName"><span class="btn-ico" data-icon="check"></span>保存名称</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 接收确认 -->
+  <div class="sheet-mask" id="offerMask" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-title"><span class="st-ic" data-icon="inbox"></span>电脑要发送文件</div>
+      <div class="offer-from" id="offerFrom">来自 —</div>
+      <ul class="offer-files" id="offerFiles"></ul>
+      <div class="offer-sum" id="offerSum"></div>
+      <div class="sheet-actions">
+        <button class="btn ghost danger" id="btnReject"><span class="btn-ico" data-icon="close"></span>拒绝</button>
+        <button class="btn primary" id="btnAccept"><span class="btn-ico" data-icon="download"></span>接收</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 扫码遮罩 -->
+  <div class="scanqr-mask" id="scanQrMask" hidden>
+    <video id="qrVideo" playsinline muted></video>
+    <div class="scanqr-frame"></div>
+    <div class="scanqr-tip" id="scanQrTip">将电脑上的二维码放入取景框</div>
+    <button class="btn ghost" id="btnCloseScan">取消</button>
+  </div>
+
+  <div class="toast-wrap" id="toastWrap"></div>
+</div>
+
+<script type="module" src="./src/ui/app.js"></script>
+</body>
+</html>

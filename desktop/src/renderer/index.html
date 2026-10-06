@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';" />
+<title>邻传 · Nearby Transfer</title>
+<link rel="icon" type="image/png" href="logo.png" />
+<link rel="stylesheet" href="style.css" />
+<script src="icons.js"></script>
+</head>
+<body>
+<div class="app">
+  <!-- 顶栏 -->
+  <header class="titlebar">
+    <div class="brand">
+      <div class="logo">N</div>
+      <div>
+        <div class="brand-title">
+          <h1>邻传</h1>
+          <span class="brand-live">运行中</span>
+        </div>
+        <p class="sub" id="selfLine">正在启动…</p>
+      </div>
+    </div>
+    <div class="titlebar-actions">
+      <button class="tb-btn" id="btnRefresh"><span class="tb-ic" data-icon="refresh"></span>刷新</button>
+      <button class="tb-btn" id="btnSettings"><span class="tb-ic" data-icon="settings"></span>设置</button>
+      <span class="pill" id="statusPill"><span class="tb-ic" data-icon="wifi"></span>运行中</span>
+
+      <div class="win-ctrl">
+        <button class="wc-btn" id="btnWinMin" title="最小化" aria-label="最小化"><span class="wc-ic" data-icon="winMin"></span></button>
+        <button class="wc-btn" id="btnWinMax" title="最大化" aria-label="最大化"><span class="wc-ic" data-icon="winMax"></span></button>
+        <button class="wc-btn wc-close" id="btnWinClose" title="关闭" aria-label="关闭"><span class="wc-ic" data-icon="winClose"></span></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主体：左侧导航 + 右侧内容 -->
+  <div class="body">
+    <nav class="sidenav">
+      <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>设备</button>
+      <button class="nav-item" data-tab="pair"><span class="ni" data-icon="link"></span>配对</button>
+      <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span>传输</button>
+      <button class="nav-item" data-tab="history"><span class="ni" data-icon="history"></span>历史</button>
+      <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span>已信任</button>
+      <button class="nav-item" data-tab="about"><span class="ni" data-icon="info"></span>关于</button>
+
+      <div class="side-foot">
+        <div class="side-illust" data-illust="blob"></div>
+        <div class="side-slogan">简单 · 安全 · 高效</div>
+        <div class="side-slogan-sub">让文件在设备间自由流动</div>
+        <div class="side-dots"><i class="on"></i><i></i><i></i></div>
+      </div>
+    </nav>
+
+    <main class="content">
+      <!-- 设备 -->
+      <section class="tab active" id="tab-devices">
+        <div class="card hero-card">
+          <div class="hero-head">
+            <div class="ic-chip" data-icon="desktop"></div>
+            <div>
+              <h2 style="font-size:16px;font-weight:660;display:flex;align-items:center;gap:9px">
+                在线设备 <span class="hd-dot"></span>
+              </h2>
+              <div class="card-desc">发现同一 Wi-Fi 下的设备，自动扫描并显示可连接的设备。</div>
+            </div>
+          </div>
+
+          <div class="hero-mid">
+            <div class="hero-illust" data-illust="devices"></div>
+            <div class="hero-cta">
+              <div class="net-select">
+                <span>当前网络：</span>
+                <b id="netAddr">—</b>
+                <select id="netSel" title="选择网段">
+                  <option value="">自动</option>
+                </select>
+              </div>
+              <button class="btn primary lg" id="btnScan">
+                <span class="bi" data-icon="search"></span>扫描网络
+              </button>
+              <input class="input" id="scanRange" placeholder="或指定网段 192.168.1.1-254" spellcheck="false" style="width:100%" />
+            </div>
+          </div>
+
+          <div class="scan-bar" id="scanBar" hidden>
+            <div class="scan-fill" id="scanFill"></div>
+            <span id="scanText">扫描中…</span>
+          </div>
+
+          <ul class="devlist" id="deviceList"></ul>
+
+          <div class="empty-panel" id="deviceEmpty">
+            <div class="ep-icon" data-icon="radar"></div>
+            <div>
+              <div class="ep-title">暂无发现在线设备</div>
+              <div class="ep-sub">请确保手机与电脑连接到同一 Wi-Fi 网络</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="send"></div>
+              <div>
+                <h2>快速发送</h2>
+                <div class="card-desc">选择要发送的内容，点击目标设备，即可快速传输。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card-body">
+            <div class="send-grid">
+              <button class="act-card" id="btnPickFiles">
+                <span class="ic-chip sm" data-icon="folderOpen"></span>
+                <span class="ac-label">选择文件</span>
+                <span class="ac-go" data-icon="chevronRight"></span>
+              </button>
+              <button class="act-card" id="btnPickFolder">
+                <span class="ic-chip sm" data-icon="folderPlus"></span>
+                <span class="ac-label">选择文件夹</span>
+                <span class="ac-go" data-icon="chevronRight"></span>
+              </button>
+              <button class="act-card" id="btnPaste">
+                <span class="ic-chip sm" data-icon="clipboard"></span>
+                <span class="ac-label">粘贴内容</span>
+                <span class="ac-go" data-icon="chevronRight"></span>
+              </button>
+            </div>
+
+            <div class="text-send">
+              <span class="ts-ic" data-icon="edit"></span>
+              <input id="textContent" placeholder="可在此输入要发送的文字内容..." spellcheck="false" />
+              <button class="ts-send" id="btnSendText" title="发送文字"><span data-icon="send"></span></button>
+            </div>
+
+            <div class="picklist" id="pickList"><span class="muted">尚未选择任何内容</span></div>
+            <div class="send-actions" style="display:flex;gap:10px;margin-top:12px">
+              <button class="btn ghost small" id="btnClearPick"><span class="bi" data-icon="trash"></span>清空待发送</button>
+            </div>
+
+            <div class="send-foot">
+              <div class="throttle">
+                <span class="th-ic" data-icon="bars"></span>
+                <label for="throttleSel">传输限制</label>
+                <select class="input" id="throttleSel">
+                  <option value="0">不限制</option>
+                  <option value="1048576">1 MB/s</option>
+                  <option value="5242880">5 MB/s</option>
+                  <option value="10485760">10 MB/s</option>
+                  <option value="52428800">50 MB/s</option>
+                </select>
+              </div>
+              <div class="foot-note">
+                <span class="fn-ic" data-icon="bolt"></span>支持多设备同时传输 · 局域网内高速直连
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 配对 -->
+      <section class="tab" id="tab-pair">
+        <div class="pair-grid">
+          <div class="card">
+            <div class="card-head">
+              <div class="ch-left">
+                <div class="ic-chip" data-icon="qr"></div>
+                <div><h2>扫码配对</h2><div class="card-desc">用手机端「扫一扫」对准二维码即可直接连接。</div></div>
+              </div>
+            </div>
+            <div class="qr-wrap">
+              <canvas id="qrCanvas" width="240" height="240"></canvas>
+              <div class="qr-meta" id="qrMeta">二维码生成中…</div>
+              <button class="btn small" id="btnRefreshQr"><span class="bi" data-icon="refresh"></span>刷新二维码</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div class="ch-left">
+                <div class="ic-chip" data-icon="key"></div>
+                <div><h2>6 位匹配码</h2><div class="card-desc">手机端手动输入下方 6 位数字完成配对，5 分钟内有效。</div></div>
+              </div>
+            </div>
+            <div class="code-display" id="pairCode">------</div>
+            <div class="code-actions">
+              <button class="btn primary" id="btnNewCode"><span class="bi" data-icon="plus"></span>生成新匹配码</button>
+              <button class="btn ghost" id="btnCopyCode"><span class="bi" data-icon="copy"></span>复制</button>
+            </div>
+            <div class="code-timer" id="codeTimer"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="info"></div>
+              <div><h2>连接须知</h2></div>
+            </div>
+          </div>
+          <ul class="tips">
+            <li>未配对设备会被直接拒绝连接，只有通过二维码或匹配码配对后的设备才能传输。</li>
+            <li>配对成功后电脑会下发长期令牌，手机端下次连接免配对。</li>
+            <li>所有数据仅在局域网内传输，不经过任何外网服务器。</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 传输 -->
+      <section class="tab" id="tab-transfers">
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="transfer"></div>
+              <div><h2>进行中</h2><div class="card-desc">实时进度、速度与剩余时间。</div></div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="activeTransfers"></div>
+            <div class="empty" id="activeEmpty">当前没有进行中的传输。</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 历史 -->
+      <section class="tab" id="tab-history">
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="history"></div>
+              <div><h2>传输历史</h2></div>
+            </div>
+            <button class="btn ghost small" id="btnOpenSaveDir"><span class="bi" data-icon="folderOpen"></span>打开保存目录</button>
+          </div>
+          <div class="card-body">
+            <div class="hist-list" id="histList"></div>
+            <div class="empty" id="histEmpty">暂无传输记录。</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 已信任 -->
+      <section class="tab" id="tab-trusted">
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-left">
+              <div class="ic-chip" data-icon="shield"></div>
+              <div><h2>已信任设备</h2><div class="card-desc">这些设备已通过配对，可直接传输。撤销后需重新配对。</div></div>
+            </div>
+          </div>
+          <div class="card-body">
+            <ul class="devlist" id="trustedList"></ul>
+            <div class="empty" id="trustedEmpty">还没有已信任的设备。</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 关于 -->
+      <section class="tab" id="tab-about">
+        <div class="card about-hero">
+          <div class="about-brand">
+            <div class="about-logo"></div>
+            <div>
+              <h2 class="about-name">邻传 <span class="about-name-en">Nearby Transfer</span></h2>
+              <div class="about-tagline">局域网文件互传 · 无需联网 · 数据不出内网</div>
+              <div class="about-ver">
+                <span class="badge badge-green">v<span id="aboutVersion">—</span></span>
+                <span class="badge" id="aboutProtocol">LTP/1</span>
+              </div>
+            </div>
+          </div>
+          <p class="about-desc">
+            邻传是一款面向局域网的跨设备文件互传工具。所有文件仅在同一 Wi-Fi 下点对点直传，
+            不经过任何第三方服务器，也不上传云端；未配对的设备一律拒绝连接。
+          </p>
+        </div>
+
+        <div class="about-grid">
+          <!-- 联系方式 -->
+          <div class="card">
+            <div class="card-head">
+              <div class="ch-left">
+                <div class="ic-chip" data-icon="link"></div>
+                <div><h2>联系我们</h2><div class="card-desc">使用中遇到问题，或想提建议，欢迎随时联系。</div></div>
+              </div>
+            </div>
+            <div class="card-body">
+              <ul class="contact-list" id="contactList">
+                <li>
+                  <button class="contact-row" id="ctMail" data-copy="hi@lantransfer.app">
+                    <span class="ct-ic" data-icon="inbox"></span>
+                    <span class="ct-body">
+                      <span class="ct-label">电子邮箱</span>
+                      <span class="ct-value">hi@lantransfer.app</span>
+                    </span>
+                    <span class="ct-act" data-icon="chevronRight"></span>
+                  </button>
+                </li>
+                <li>
+                  <button class="contact-row" id="ctSite" data-copy="https://lantransfer.app">
+                    <span class="ct-ic" data-icon="wifi"></span>
+                    <span class="ct-body">
+                      <span class="ct-label">官方网站</span>
+                      <span class="ct-value">lantransfer.app</span>
+                    </span>
+                    <span class="ct-act" data-icon="chevronRight"></span>
+                  </button>
+                </li>
+                <li>
+                  <button class="contact-row" id="ctWechat" data-copy="NearbyTransfer">
+                    <span class="ct-ic" data-icon="sparkle"></span>
+                    <span class="ct-body">
+                      <span class="ct-label">微信公众号</span>
+                      <span class="ct-value">NearbyTransfer</span>
+                    </span>
+                    <span class="ct-act" data-icon="copy"></span>
+                  </button>
+                </li>
+              </ul>
+              <p class="contact-hint">点击邮箱或官网可直接唤起系统应用；微信公众号名点击即复制。</p>
+            </div>
+          </div>
+
+          <!-- 版权与运行环境 -->
+          <div class="card">
+            <div class="card-head">
+              <div class="ch-left">
+                <div class="ic-chip" data-icon="lock"></div>
+                <div><h2>版权信息</h2><div class="card-desc">开源许可与运行环境。</div></div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="kv" id="aboutEnv"></div>
+              <p class="about-copy">
+                © 2026 邻传 Nearby Transfer · 保留所有权利。<br />
+                本软件界面字体使用 <b>思源黑体（Source Han Sans）</b>，由 Adobe 与 Google 联合开发，
+                以 SIL Open Font License 1.1 授权发布。
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- 接收确认弹窗 -->
+<div class="modal-mask" id="offerModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="dot-badge" data-icon="inbox"></div>
+      <div>
+        <h3>收到文件</h3>
+        <p id="offerFrom">来自未知设备</p>
+      </div>
+    </div>
+    <div class="offer-files" id="offerFiles"></div>
+    <div class="offer-summary" id="offerSummary"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnRejectOffer"><span class="bi" data-icon="close"></span>拒绝</button>
+      <button class="btn primary" id="btnAcceptOffer"><span class="bi" data-icon="download"></span>接收</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗（常规 / 关于 两个页签） -->
+<div class="modal-mask" id="settingsModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="dot-badge" data-icon="settings"></div>
+      <div><h3>设置</h3><p>本机身份、接收目录与软件信息</p></div>
+    </div>
+
+    <div class="mtabs">
+      <button class="mtab active" data-mtab="general">常规</button>
+      <button class="mtab" data-mtab="about">关于</button>
+    </div>
+
+    <div class="mpane active" id="mpane-general">
+      <div class="field">
+        <label>设备名称</label>
+        <input class="input" id="setName" maxlength="32" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label>接收文件保存目录</label>
+        <div class="row">
+          <input class="input" id="setSaveDir" readonly />
+          <button class="btn" id="btnChangeDir">更改…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>协议信息</label>
+        <div class="kv" id="setInfo"></div>
+      </div>
+    </div>
+
+    <div class="mpane" id="mpane-about">
+      <div class="mini-brand">
+        <div class="mini-logo"></div>
+        <div>
+          <div class="mini-name">邻传 <span>Nearby Transfer</span></div>
+          <div class="mini-ver">版本 v<span id="setAboutVersion">—</span> · 协议 LTP/1</div>
+        </div>
+      </div>
+      <div class="mini-sec">
+        <div class="mini-sec-t">联系方式</div>
+        <ul class="contact-list compact">
+          <li>
+            <button class="contact-row" data-copy="hi@lantransfer.app" data-mail="hi@lantransfer.app">
+              <span class="ct-ic" data-icon="inbox"></span>
+              <span class="ct-body"><span class="ct-label">邮箱</span><span class="ct-value">hi@lantransfer.app</span></span>
+              <span class="ct-act" data-icon="chevronRight"></span>
+            </button>
+          </li>
+          <li>
+            <button class="contact-row" data-copy="https://lantransfer.app" data-site="https://lantransfer.app">
+              <span class="ct-ic" data-icon="wifi"></span>
+              <span class="ct-body"><span class="ct-label">官网</span><span class="ct-value">lantransfer.app</span></span>
+              <span class="ct-act" data-icon="chevronRight"></span>
+            </button>
+          </li>
+          <li>
+            <button class="contact-row" data-copy="NearbyTransfer">
+              <span class="ct-ic" data-icon="sparkle"></span>
+              <span class="ct-body"><span class="ct-label">微信公众号</span><span class="ct-value">NearbyTransfer</span></span>
+              <span class="ct-act" data-icon="copy"></span>
+            </button>
+          </li>
+        </ul>
+      </div>
+      <div class="mini-sec">
+        <div class="mini-sec-t">版权</div>
+        <p class="about-copy">© 2026 邻传 Nearby Transfer · 保留所有权利。<br />界面字体：思源黑体（SIL Open Font License 1.1）</p>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnCloseSettings">关闭</button>
+      <button class="btn primary" id="btnSaveSettings"><span class="bi" data-icon="check"></span>保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

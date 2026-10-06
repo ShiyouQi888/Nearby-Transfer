@@ -1,0 +1,29 @@
+{
+  "name": "lan-transfer-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "邻传 Nearby Transfer · 手机端 (Android, LTP/1)",
+  "type": "module",
+  "scripts": {
+    "gen:protocol": "node ../scripts/gen-protocol-mjs.js",
+    "predev": "npm run gen:protocol",
+    "dev": "vite --host 0.0.0.0 --port 5175",
+    "prebuild": "npm run gen:protocol",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5175",
+    "cap:sync": "npm run build && cap sync android",
+    "cap:open": "cap open android",
+    "cap:icon": "capacitor-assets generate --android",
+    "cap:build": "npm run build && cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/filesystem": "^6.0.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "vite": "^5.4.11"
+  }
+}

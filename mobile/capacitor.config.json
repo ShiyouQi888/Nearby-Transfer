@@ -1,0 +1,14 @@
+{
+  "appId": "com.lantransfer.mobile",
+  "appName": "邻传",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

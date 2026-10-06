@@ -58,7 +58,7 @@
 
 ```
 Nearby-Transfer-Setup-1.0.0.exe     sha256 cd99f581f5bab11cb1210d3705f446009eea70c28b8a2eaf75702c75cf5bceb7
-Nearby-Transfer-v1.0.0-debug.apk    sha256 7fddb4df9835c5bc9e055183c8686ada1e9f2b7ccecce331259dc72bf65eda28
+Nearby-Transfer-v1.0.0-debug.apk    sha256 8fe2e189ef8825453a3d20dc363901a9f5a05a6eaa37f4f23d4c374bd1e49341
 ```
 
 > 附件名使用 ASCII 以确保各平台下载兼容；应用本身名称仍为「邻传 / Nearby Transfer」。

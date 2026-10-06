@@ -26,6 +26,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const https = require('https');
 const { execFile } = require('child_process');
 const P = require('../../../shared/protocol.js');
 const { Discovery, listLocalIPv4 } = require('./discovery.js');
@@ -55,6 +56,41 @@ function appVersion() {
     }
   } catch (_) { /* 读不到就回退 */ }
   try { return app.getVersion(); } catch (_) { return '1.0.0'; }
+}
+
+function checkGithubRelease() {
+  const endpoint = 'https://api.github.com/repos/ShiyouQi888/Nearby-Transfer/releases/latest';
+  return new Promise((resolve, reject) => {
+    const req = https.get(endpoint, { headers: { 'User-Agent': 'Nearby-Transfer-Desktop', Accept: 'application/vnd.github+json' } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error(`GitHub Releases HTTP ${res.statusCode}`));
+        try {
+          const data = JSON.parse(body);
+          const version = String(data.tag_name || '').replace(/^v/i, '');
+          const assets = Array.isArray(data.assets) ? data.assets : [];
+          resolve({
+            currentVersion: appVersion(), latestVersion: version, updateAvailable: compareVersions(version, appVersion()) > 0,
+            releaseUrl: data.html_url || 'https://github.com/ShiyouQi888/Nearby-Transfer/releases',
+            desktopUrl: (assets.find((a) => /Nearby-Transfer-Setup-.*\.exe$/i.test(a.name)) || {}).browser_download_url || data.html_url,
+            apkUrl: (assets.find((a) => /Nearby-Transfer-.*\.apk$/i.test(a.name)) || {}).browser_download_url || data.html_url,
+            publishedAt: data.published_at || '',
+          });
+        } catch (e) { reject(e); }
+      });
+    });
+    req.setTimeout(10000, () => req.destroy(new Error('检查更新超时')));
+    req.on('error', reject);
+  });
+}
+
+function compareVersions(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -365,6 +401,10 @@ function registerIpc() {
     arch: process.arch,
     protocol: P.PROTOCOL_ID,
   }));
+  ipcMain.handle('ltp:checkForUpdates', async () => {
+    try { return { ok: true, ...(await checkGithubRelease()) }; }
+    catch (e) { return { ok: false, error: e && e.message ? e.message : '检查更新失败' }; }
+  });
 
   // 只允许 http/https/mailto，避免渲染层被注入后调用 shell 打开任意协议
   ipcMain.handle('ltp:openExternal', (e, url) => {

@@ -29,6 +29,10 @@ import com.journeyapps.barcodescanner.ScanContract;
 import com.journeyapps.barcodescanner.ScanOptions;
 
 import java.util.ArrayList;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.List;
 
 /** Native Android entry point. This screen does not use WebView or Capacitor. */
@@ -49,6 +53,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private FrameLayout pageHost;
     private Button navConnect, navSend, navSettings;
     private Button sendButton;
+    private Button updateButton;
+    private TextView updateStatus;
     private TextView receiveText;
     private LinearLayout receiveActions;
 
@@ -105,6 +111,9 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         linkParams = new LinearLayout.LayoutParams(0, dp(104), 1); linkParams.setMargins(dp(5), 0, 0, 0);
         linkRow.addView(linkTile("@", "联系作者", "发送邮件", v -> openExternal("mailto:blacklaw@foxmail.com")), linkParams);
         settingsSection.addView(linkRow, params(-1, 116));
+        TextView updateTitle = text("版本更新", 17, Color.WHITE); updateTitle.setPadding(0, dp(18), 0, dp(2)); settingsSection.addView(updateTitle, params(-1, 38));
+        updateStatus = text("更新源：GitHub Releases", 12, Color.rgb(127, 132, 128)); settingsSection.addView(updateStatus, params(-1, 28));
+        updateButton = button("检查更新"); updateButton.setOnClickListener(v -> checkForUpdates()); settingsSection.addView(updateButton, params(-1, 52));
 
         pageHost = new FrameLayout(this); pageHost.setBackgroundColor(Color.rgb(15, 18, 16));
         pageHost.addView(page(connectionSection)); pageHost.addView(page(sendSection)); pageHost.addView(page(settingsSection));
@@ -239,6 +248,43 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private void openExternal(String uri) {
         try { startActivity(new Intent(uri.startsWith("mailto:") ? Intent.ACTION_SENDTO : Intent.ACTION_VIEW, Uri.parse(uri))); }
         catch (Exception ignored) { toast("无法打开链接，请检查系统应用"); }
+    }
+
+    private void checkForUpdates() {
+        if (updateButton == null || updateStatus == null) return;
+        updateButton.setEnabled(false); updateStatus.setText("正在检查 GitHub Releases…");
+        new Thread(() -> {
+            try {
+                HttpURLConnection connection = (HttpURLConnection) new URL("https://api.github.com/repos/ShiyouQi888/Nearby-Transfer/releases/latest").openConnection();
+                connection.setRequestMethod("GET"); connection.setConnectTimeout(10000); connection.setReadTimeout(10000); connection.setRequestProperty("Accept", "application/vnd.github+json"); connection.setRequestProperty("User-Agent", "Nearby-Transfer-Android");
+                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new Exception("GitHub Releases 暂不可用");
+                StringBuilder raw = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) { String line; while ((line = reader.readLine()) != null) raw.append(line); }
+                org.json.JSONObject release = new org.json.JSONObject(raw.toString());
+                String latest = release.optString("tag_name", "").replaceFirst("^[vV]", ""); String releaseUrl = release.optString("html_url", "https://github.com/ShiyouQi888/Nearby-Transfer/releases"); String apkUrl = releaseUrl;
+                org.json.JSONArray assets = release.optJSONArray("assets");
+                if (assets != null) for (int i = 0; i < assets.length(); i++) { org.json.JSONObject asset = assets.optJSONObject(i); if (asset != null && asset.optString("name").toLowerCase(java.util.Locale.ROOT).endsWith(".apk")) { apkUrl = asset.optString("browser_download_url", releaseUrl); break; } }
+                final String version = latest, downloadUrl = apkUrl;
+                runOnUiThread(() -> {
+                    updateButton.setEnabled(true);
+                    if (compareVersions(version, appVersion()) > 0) { updateStatus.setText("发现新版本 v" + version); updateButton.setText("下载新版 APK"); updateButton.setOnClickListener(v -> openExternal(downloadUrl)); }
+                    else { updateStatus.setText("当前已是最新版本 v" + appVersion()); updateButton.setText("重新检查"); updateButton.setOnClickListener(v -> checkForUpdates()); }
+                });
+            } catch (Exception error) { runOnUiThread(() -> { updateButton.setEnabled(true); updateStatus.setText("暂时无法检查更新，请稍后重试"); updateButton.setText("重新检查"); }); }
+        }).start();
+    }
+
+    private int compareVersions(String left, String right) {
+        String[] a = String.valueOf(left).split("\\."), b = String.valueOf(right).split("\\.");
+        for (int i = 0; i < Math.max(a.length, b.length); i++) { int x = i < a.length ? parseVersionPart(a[i]) : 0, y = i < b.length ? parseVersionPart(b[i]) : 0; if (x != y) return x - y; }
+        return 0;
+    }
+
+    private int parseVersionPart(String value) { try { return Integer.parseInt(value.replaceAll("[^0-9].*", "")); } catch (Exception ignored) { return 0; } }
+
+    private String appVersion() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Exception ignored) { return "1.0.1"; }
     }
 
     @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText("已连接 · " + name); connectButton.setEnabled(true); connectButton.setText("已连接"); pickButton.setText("选择文件（加入待发送）"); updateSendButtonState(); }); }

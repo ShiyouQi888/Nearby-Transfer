@@ -547,6 +547,8 @@ select.input { cursor: pointer; -webkit-appearance: none; appearance: none;
 .target-picker-option svg { color: var(--ds-brand-bright); flex-shrink: 0; }
 .target-picker-option span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .target-picker-option small { color: var(--ds-text-muted); }
+.about-update-row { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-top:12px; color:var(--ds-text-muted); font-size:12px; }
+.about-update-row span { flex:1; min-width:180px; }
 .qs-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ds-text-secondary); font-size: 13px; font-weight: 650; white-space: nowrap; }
 .qs-label .bi { color: var(--ds-brand-bright); }
 @media (max-width: 700px) { .quick-send-bar { align-items: stretch; flex-direction: column; } .quick-send-target { width: 100%; } .quick-send-bar > .btn { width: 100%; } }

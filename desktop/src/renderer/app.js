@@ -671,6 +671,7 @@ function renderTrusted() {
 // ── 关于页 ───────────────────────────────────────────
 
 let APP_INFO = null;
+let UPDATE_INFO = null;
 
 async function renderAbout() {
   if (!APP_INFO) {
@@ -696,6 +697,27 @@ async function renderAbout() {
       .join('');
   }
 }
+
+async function checkForUpdates() {
+  const status = $('updateStatus');
+  const check = $('btnCheckUpdate');
+  const open = $('btnOpenUpdate');
+  if (!status || !check || !open) return;
+  check.disabled = true; open.hidden = true; status.textContent = '正在检查 GitHub Releases…';
+  try {
+    const r = await api.checkForUpdates();
+    if (!r || !r.ok) throw new Error((r && r.error) || '检查更新失败');
+    UPDATE_INFO = r;
+    if (r.updateAvailable) {
+      status.textContent = `发现新版本 v${r.latestVersion}`;
+      open.hidden = false;
+      open.onclick = () => api.openExternal(r.desktopUrl || r.releaseUrl);
+    } else status.textContent = `当前已是最新版本 v${r.currentVersion}`;
+  } catch (e) { status.textContent = `暂时无法检查更新：${e.message || '网络不可用'}`; }
+  check.disabled = false;
+}
+
+if ($('btnCheckUpdate')) $('btnCheckUpdate').addEventListener('click', checkForUpdates);
 
 /** 联系方式的点击行为：邮箱唤起邮件客户端，官网唤起浏览器；失败则复制到剪贴板。 */
 function bindContactRows() {

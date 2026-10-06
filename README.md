@@ -4,7 +4,7 @@
   <p><strong>让文件，在你的设备之间自由流动。</strong></p>
   <p>Windows 电脑与 Android 手机的局域网高速互传工具</p>
 
-  <a href="https://github.com/ShiyouQi888/Nearby-Transfer/releases/tag/v1.0.0">下载最新版</a>
+  <a href="https://github.com/ShiyouQi888/Nearby-Transfer/releases/tag/v1.0.1">下载最新版</a>
   ·
   <a href="https://linchuan.aeback.com">官方网站</a>
   ·
@@ -78,12 +78,12 @@
 
 ## 下载与安装
 
-当前版本：**v1.0.0**
+当前版本：**v1.0.1**
 
 | 平台 | 下载 | 说明 |
 |---|---|---|
-| Windows | [Nearby-Transfer-Setup-1.0.0.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.0/Nearby-Transfer-Setup-1.0.0.exe) | Windows x64 安装包 |
-| Android | [Nearby-Transfer-v1.0.0-debug.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.0/Nearby-Transfer-v1.0.0-debug.apk) | Android APK |
+| Windows | [Nearby-Transfer-Setup-1.0.1.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.1/Nearby-Transfer-Setup-1.0.1.exe) | Windows x64 安装包 |
+| Android | [Nearby-Transfer-v1.0.1-debug.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.1/Nearby-Transfer-v1.0.1-debug.apk) | Android APK |
 
 ### 使用前提
 

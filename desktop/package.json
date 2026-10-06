@@ -1,6 +1,6 @@
 {
   "name": "lan-transfer-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "邻传 Nearby Transfer · Windows 电脑端 (LTP/1)",
   "author": "齐世有 <blacklaw@foxmail.com>",

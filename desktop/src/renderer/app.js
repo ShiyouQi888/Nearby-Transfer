@@ -19,6 +19,7 @@ const S = {
   transfers: new Map(), // transferId -> { ...记录, sessionId }
   received: [],
   picks: [],            // 待发送的本地路径
+  pickSelection: [],    // 待发送清单的勾选状态
   quickTargetId: '',
   pendingOffer: null,
   scanTimer: null,
@@ -249,13 +250,15 @@ function esc(s) {
 
 $('btnPickFiles').addEventListener('click', async () => {
   const paths = await api.pickFiles();
-  if (paths.length) { S.picks.push(...paths); renderPicks(); }
+  if (paths.length) { S.picks.push(...paths); S.pickSelection.push(...paths.map(() => true)); renderPicks(); }
 });
 $('btnPickFolder').addEventListener('click', async () => {
   const paths = await api.pickFolder();
-  if (paths.length) { S.picks.push(...paths); renderPicks(); }
+  if (paths.length) { S.picks.push(...paths); S.pickSelection.push(...paths.map(() => true)); renderPicks(); }
 });
-$('btnClearPick').addEventListener('click', () => { S.picks = []; renderPicks(); });
+$('btnClearPick').addEventListener('click', () => { S.picks = []; S.pickSelection = []; renderPicks(); });
+$('btnSelectAllPick').addEventListener('click', () => { S.pickSelection = S.picks.map(() => true); renderPicks(); });
+$('btnClearSelectedPick').addEventListener('click', () => { S.pickSelection = S.picks.map(() => false); renderPicks(); });
 
 $('quickTarget').addEventListener('click', (e) => {
   const root = $('quickTarget');
@@ -286,6 +289,7 @@ $('btnPaste').addEventListener('click', async () => {
   const r = await api.readClipboard();
   if (r && r.files && r.files.length) {
     S.picks.push(...r.files);
+    S.pickSelection.push(...r.files.map(() => true));
     renderPicks();
     toast(`已从剪贴板添加 ${r.files.length} 个文件`, 'ok');
     return;
@@ -304,6 +308,7 @@ $('btnSendText').addEventListener('click', async () => {
   const text = $('textContent').value.trim();
   if (!text) { toast('请先输入要发送的文字内容', 'err'); return; }
   S.picks.push({ text });
+  S.pickSelection.push(true);
   $('textContent').value = '';
   renderPicks();
   toast('已加入待发送清单，请选择目标设备', 'ok');
@@ -316,12 +321,15 @@ function renderPicks() {
     renderQuickTargets();
     return;
   }
-  el.innerHTML = S.picks.map((p, i) => {
+  while (S.pickSelection.length < S.picks.length) S.pickSelection.push(true);
+  const selectedCount = S.pickSelection.filter(Boolean).length;
+  el.innerHTML = `<div class="pick-summary">已勾选 ${selectedCount} / ${S.picks.length} 项</div>` + S.picks.map((p, i) => {
     const isText = p && typeof p === 'object' && p.text != null;
     const name = isText ? (p.text.slice(0, 40) + (p.text.length > 40 ? '…' : '')) : fmt.baseName(p);
     const sub = isText ? `文字 · ${p.text.length} 字` : String(p);
     return `
     <div class="pick-item">
+      <label class="pick-check" title="选择此项发送"><input type="checkbox" data-pick-check="${i}" ${S.pickSelection[i] !== false ? 'checked' : ''} aria-label="选择 ${esc(name)}"></label>
       <span class="pi-ico">${isText ? window.Icons.icon('edit', { size: 19, sw: 1.7 }) : fileVisual(fmt.baseName(p), p, 30)}</span>
       <span class="pi-name">${esc(name)}</span>
       <span class="pi-size">${esc(sub)}</span>
@@ -331,7 +339,10 @@ function renderPicks() {
   fillIcons(el);
   hydrateThumbnails(el);
   el.querySelectorAll('[data-rm]').forEach((b) => {
-    b.addEventListener('click', () => { S.picks.splice(+b.dataset.rm, 1); renderPicks(); });
+    b.addEventListener('click', () => { const i = +b.dataset.rm; S.picks.splice(i, 1); S.pickSelection.splice(i, 1); renderPicks(); });
+  });
+  el.querySelectorAll('[data-pick-check]').forEach((box) => {
+    box.addEventListener('change', () => { S.pickSelection[+box.dataset.pickCheck] = box.checked; renderPicks(); });
   });
   renderQuickTargets();
 }
@@ -354,22 +365,26 @@ function renderQuickTargets() {
     select.setAttribute('aria-expanded', 'false');
     renderQuickTargets();
   }));
-  button.disabled = !(S.picks.length && S.quickTargetId && items.some((d) => d.deviceId === S.quickTargetId));
+  button.disabled = !(S.pickSelection.some(Boolean) && S.quickTargetId && items.some((d) => d.deviceId === S.quickTargetId));
 }
 
 async function sendToDevice(dev) {
   if (!dev) return;
-  if (!S.picks.length) {
+  const selectedIndices = S.picks.map((_, i) => i).filter((i) => S.pickSelection[i] !== false);
+  const selectedPicks = selectedIndices.map((i) => S.picks[i]);
+  if (!selectedPicks.length) {
     toast('请先在下方「快速发送」选择文件或文件夹', 'err');
     return;
   }
   const throttle = +$('throttleSel').value || 0;
   const trusted = S.trusted.some((t) => t.deviceId === dev.deviceId);
   toast(trusted ? `正在连接 ${dev.name}…` : `正在与 ${dev.name} 建立配对连接…`);
-  const r = await api.sendTo(dev.deviceId, S.picks, throttle);
+  const r = await api.sendTo(dev.deviceId, selectedPicks, throttle);
   if (r && r.ok) {
     toast(`已向 ${dev.name} 发起传输（${r.files} 项）`, 'ok');
-    S.picks = [];
+    const selectedSet = new Set(selectedIndices);
+    S.picks = S.picks.filter((_, i) => !selectedSet.has(i));
+    S.pickSelection = S.picks.map(() => true);
     renderPicks();
     goto('transfers');
   } else {

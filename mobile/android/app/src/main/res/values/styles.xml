@@ -4,15 +4,20 @@
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#0F1210</item>
+        <item name="android:colorAccent">#00D283</item>
+        <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">#0F1210</item>
         <item name="android:navigationBarColor">#0F1210</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 
     <style name="AppTheme.NoActionBar" parent="AppTheme" />
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme">
-        <item name="android:background">@drawable/splash</item>
+        <!-- 不使用旧的白底启动图，避免启动背景覆盖原生深色界面。 -->
+        <item name="android:windowBackground">#0F1210</item>
     </style>
 </resources>

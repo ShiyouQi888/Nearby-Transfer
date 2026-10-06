@@ -31,6 +31,9 @@ const P = require('../../../shared/protocol.js');
 const { Discovery, listLocalIPv4 } = require('./discovery.js');
 const { TransferServer } = require('./server.js');
 
+// Windows 通知使用稳定的应用标识，避免系统显示为 electron.app.*。
+if (process.platform === 'win32') app.setAppUserModelId('com.lantransfer.desktop');
+
 const isDev = !!process.env.LTP_DEV;
 
 /**

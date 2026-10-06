@@ -57,7 +57,7 @@
 ## 校验
 
 ```
-Nearby-Transfer-Setup-1.0.0.exe     sha256 cd99f581f5bab11cb1210d3705f446009eea70c28b8a2eaf75702c75cf5bceb7
+Nearby-Transfer-Setup-1.0.0.exe     sha256 380f777ce106d7f4f8d6e238090b88cd7ca5736a8c96aecaef423a08db367314
 Nearby-Transfer-v1.0.0-debug.apk    sha256 8fe2e189ef8825453a3d20dc363901a9f5a05a6eaa37f4f23d4c374bd1e49341
 ```
 

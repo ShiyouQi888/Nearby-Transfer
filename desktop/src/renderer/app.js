@@ -111,7 +111,9 @@ function toast(msg, kind) {
 
 function notify(title, body) {
   try {
-    if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body, silent: false });
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body, silent: false, icon: 'logo.png', dir: 'auto', lang: 'zh-CN' });
+    }
     else if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
   } catch (_) {}
 }
@@ -696,7 +698,7 @@ function showOffer(offer) {
 
   $('offerModal').hidden = false;
   renderReceived();
-  notify('邻传收到文件', `${devName} 请求发送 ${offer.files.length} 个文件`);
+  notify('收到文件', `${devName} 请求发送 ${offer.files.length} 个文件`);
 }
 
 function renderReceived() {
@@ -872,7 +874,7 @@ function bindEvents() {
           renderTransfers();
           if (ev === 'transfer:complete' && t.status === 'done') {
             toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
-            notify('邻传传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
+            notify('传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
             if (t.direction === 'receive') {
               (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
               renderReceived();

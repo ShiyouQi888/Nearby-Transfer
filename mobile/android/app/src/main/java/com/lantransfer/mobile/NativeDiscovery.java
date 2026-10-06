@@ -30,7 +30,9 @@ final class NativeDiscovery {
         } catch (Exception ignored) { }
         thread = new Thread(() -> {
             try {
-                socket = new DatagramSocket(null); socket.setReuseAddress(true); socket.bind(new java.net.InetSocketAddress(PORT));
+                // 明确绑定 IPv4，避免部分 Android 设备将通配地址解析成 IPv6，收不到电脑的 UDP 探测。
+                socket = new DatagramSocket(null); socket.setReuseAddress(true);
+                socket.bind(new java.net.InetSocketAddress(InetAddress.getByName("0.0.0.0"), PORT));
                 socket.setBroadcast(true);
                 byte[] buffer = new byte[8192];
                 while (running.get()) {

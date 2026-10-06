@@ -19,6 +19,7 @@ const S = {
   transfers: new Map(), // transferId -> { ...记录, sessionId }
   received: [],
   picks: [],            // 待发送的本地路径
+  quickTargetId: '',
   pendingOffer: null,
   scanTimer: null,
   qrPayload: null,
@@ -63,6 +64,22 @@ const fmt = {
   svg: (name, opts) => window.Icons.icon(name, opts),
   baseName: (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p,
 };
+
+function fileVisual(name, filePath, size = 30) {
+  const icon = fmt.icon(name, size);
+  if (!filePath) return icon;
+  return `<span class="file-visual" data-thumb-path="${esc(filePath)}">${icon}</span>`;
+}
+
+async function hydrateThumbnails(root) {
+  const nodes = (root || document).querySelectorAll('[data-thumb-path]');
+  await Promise.all([...nodes].map(async (el) => {
+    const r = await api.getImagePreview(el.dataset.thumbPath);
+    if (!r || !r.ok || !r.dataUrl) return;
+    el.classList.add('has-thumb');
+    el.innerHTML = `<img src="${r.dataUrl}" alt="" draggable="false" />`;
+  }));
+}
 
 // ── 图标占位符自动填充 ────────────────────────────────
 // HTML 中写 <span data-icon="xxx"></span>，此处统一注入 SVG，
@@ -240,9 +257,25 @@ $('btnPickFolder').addEventListener('click', async () => {
 });
 $('btnClearPick').addEventListener('click', () => { S.picks = []; renderPicks(); });
 
-$('quickTarget').addEventListener('change', () => renderQuickTargets());
+$('quickTarget').addEventListener('click', (e) => {
+  const root = $('quickTarget');
+  if (!e.target.closest('.target-picker-trigger')) return;
+  const menu = root.querySelector('.target-picker-menu');
+  const hasItems = menu.querySelector('[data-target-id]');
+  if (!hasItems) return;
+  const open = menu.hidden;
+  menu.hidden = !open;
+  root.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', (e) => {
+  const root = $('quickTarget');
+  if (root && !root.contains(e.target)) {
+    root.querySelector('.target-picker-menu').hidden = true;
+    root.setAttribute('aria-expanded', 'false');
+  }
+});
 $('btnQuickSend').addEventListener('click', async () => {
-  const id = $('quickTarget').value;
+  const id = S.quickTargetId;
   const dev = getAvailableDevices().find((d) => d.deviceId === id);
   if (!dev) { toast('请先选择在线目标设备', 'err'); return; }
   await sendToDevice(dev);
@@ -289,13 +322,14 @@ function renderPicks() {
     const sub = isText ? `文字 · ${p.text.length} 字` : String(p);
     return `
     <div class="pick-item">
-      <span class="pi-ico">${isText ? window.Icons.icon('edit', { size: 19, sw: 1.7 }) : fmt.icon(fmt.baseName(p), 20)}</span>
+      <span class="pi-ico">${isText ? window.Icons.icon('edit', { size: 19, sw: 1.7 }) : fileVisual(fmt.baseName(p), p, 30)}</span>
       <span class="pi-name">${esc(name)}</span>
       <span class="pi-size">${esc(sub)}</span>
       <button class="btn ghost small" data-rm="${i}"><span class="bi" data-icon="close"></span>移除</button>
     </div>`;
   }).join('');
   fillIcons(el);
+  hydrateThumbnails(el);
   el.querySelectorAll('[data-rm]').forEach((b) => {
     b.addEventListener('click', () => { S.picks.splice(+b.dataset.rm, 1); renderPicks(); });
   });
@@ -306,14 +340,21 @@ function renderQuickTargets() {
   const select = $('quickTarget');
   const button = $('btnQuickSend');
   if (!select || !button) return;
-  const current = select.value;
   const items = getAvailableDevices();
-  select.innerHTML = items.length
-    ? '<option value="">请选择在线设备</option>' + items.map((d) => `<option value="${esc(d.deviceId)}">${esc(d.name || d.deviceId)}${d.type === 'mobile' ? ' · 手机' : ' · 电脑'}</option>`).join('')
-    : '<option value="">暂无在线设备，请先扫描</option>';
-  if (items.some((d) => d.deviceId === current)) select.value = current;
-  button.disabled = !(S.picks.length && select.value && items.some((d) => d.deviceId === select.value));
-  fillIcons(select.parentElement.parentElement);
+  if (!items.some((d) => d.deviceId === S.quickTargetId)) S.quickTargetId = '';
+  const current = items.find((d) => d.deviceId === S.quickTargetId);
+  select.querySelector('.target-picker-label').textContent = current
+    ? `${current.name || current.deviceId}${current.type === 'mobile' ? ' · 手机' : ' · 电脑'}`
+    : (items.length ? '请选择在线设备' : '暂无在线设备，请先扫描');
+  const menu = select.querySelector('.target-picker-menu');
+  menu.innerHTML = items.map((d) => `<button type="button" class="target-picker-option${d.deviceId === S.quickTargetId ? ' selected' : ''}" data-target-id="${esc(d.deviceId)}" role="option">${window.Icons.icon(d.type === 'mobile' ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}<span>${esc(d.name || d.deviceId)}</span><small>${d.type === 'mobile' ? '手机' : '电脑'}</small></button>`).join('');
+  menu.querySelectorAll('[data-target-id]').forEach((option) => option.addEventListener('click', () => {
+    S.quickTargetId = option.dataset.targetId;
+    menu.hidden = true;
+    select.setAttribute('aria-expanded', 'false');
+    renderQuickTargets();
+  }));
+  button.disabled = !(S.picks.length && S.quickTargetId && items.some((d) => d.deviceId === S.quickTargetId));
 }
 
 async function sendToDevice(dev) {
@@ -531,7 +572,7 @@ function renderHistory() {
     const openable = first && first.path && h.status === 'done' && !isSend;
     return `
       <div class="hist">
-        <div class="dir-badge ${isSend ? 'send' : 'recv'}">${window.Icons.icon(isSend ? 'arrowUp' : 'arrowDown', { size: 16, sw: 1.9 })}</div>
+        <div class="history-file-visual">${fileVisual(label, first && first.path, 32)}<span class="dir-badge ${isSend ? 'send' : 'recv'}">${window.Icons.icon(isSend ? 'arrowUp' : 'arrowDown', { size: 13, sw: 1.9 })}</span></div>
         <div class="hist-main">
           <div class="hist-name">${esc(label)}</div>
           <div class="hist-meta">
@@ -550,6 +591,7 @@ function renderHistory() {
       </div>`;
   }).join('');
   fillIcons(list);
+  hydrateThumbnails(list);
 
   list.querySelectorAll('[data-open]').forEach((b) =>
     b.addEventListener('click', () => api.openPath(b.dataset.open)));
@@ -708,9 +750,11 @@ function renderReceived() {
   $('receivedEmpty').hidden = items.length > 0;
   list.innerHTML = items.slice(0, 30).map((x) => `
     <div class="hist">
+      <div class="received-file-visual">${fileVisual(x.name, x.path, 32)}</div>
       <div class="hist-main"><div class="hist-name">${esc(x.name)}</div><div class="hist-meta">${esc(x.from)} · ${esc(x.status)} · ${fmt.time(x.at)}</div></div>
       <div class="hist-size">${fmt.bytes(x.size || 0)}</div>
     </div>`).join('');
+  hydrateThumbnails(list);
 }
 
 $('btnOpenReceiveDir').addEventListener('click', async () => {
@@ -876,7 +920,7 @@ function bindEvents() {
             toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
             notify('传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
             if (t.direction === 'receive') {
-              (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
+              (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', path: f.path || '', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
               renderReceived();
             }
           }

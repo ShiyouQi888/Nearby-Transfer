@@ -383,6 +383,22 @@ function registerIpc() {
     port: P.PORT,
   }));
 
+  // 本地图片缩略图：仅允许常见图片格式且限制大小，避免把任意文件暴露给渲染层。
+  ipcMain.handle('ltp:getImagePreview', (e, filePath) => {
+    const p = String(filePath || '');
+    const ext = path.extname(p).toLowerCase();
+    const mime = {
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+      '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+    }[ext];
+    if (!mime || !fs.existsSync(p)) return { ok: false };
+    try {
+      const stat = fs.statSync(p);
+      if (!stat.isFile() || stat.size > 3 * 1024 * 1024) return { ok: false };
+      return { ok: true, dataUrl: `data:${mime};base64,${fs.readFileSync(p).toString('base64')}` };
+    } catch (_) { return { ok: false }; }
+  });
+
   ipcMain.handle('ltp:ensureFirewall', async () => ensureFirewallRules());
 
   ipcMain.handle('ltp:getDevices', () => (discovery ? discovery.list() : []));

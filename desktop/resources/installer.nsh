@@ -1,8 +1,7 @@
-; 邻传 NSIS 品牌主题：与桌面端保持深色背景和绿色强调色。
-; 这些定义在 MUI 页面创建前生效，避免使用默认蓝白向导配色。
-!define MUI_BGCOLOR "#0D1215"
-!define MUI_TEXT_COLOR "#EAF2ED"
-!define MUI_TEXT_COLOR_SUBTITLE "#9EB0A6"
-!define MUI_TEXT_COLOR_INFO "#9EB0A6"
-!define MUI_TEXT_COLOR_WARN "#F6C86E"
-!define MUI_TEXT_COLOR_ERROR "#FF7D87"
+; 邻传 NSIS 品牌主题：使用浅绿灰内容区，避免系统向导出现黑色空白块。
+!define MUI_BGCOLOR "#F3F8F5"
+!define MUI_TEXT_COLOR "#1D2B24"
+!define MUI_TEXT_COLOR_SUBTITLE "#64756B"
+!define MUI_TEXT_COLOR_INFO "#64756B"
+!define MUI_TEXT_COLOR_WARN "#9A6500"
+!define MUI_TEXT_COLOR_ERROR "#B23A48"

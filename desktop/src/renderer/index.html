@@ -150,9 +150,10 @@
             <div class="quick-send-bar">
               <div class="quick-send-target">
                 <span class="qs-label"><span class="bi" data-icon="send"></span>发送到</span>
-                <select class="input" id="quickTarget" aria-label="选择发送目标">
-                  <option value="">请先选择目标设备</option>
-                </select>
+                <div class="target-picker" id="quickTarget" role="combobox" aria-label="选择发送目标" aria-expanded="false">
+                  <button class="target-picker-trigger" type="button"><span class="target-picker-label">请先选择目标设备</span><span class="target-picker-chevron" data-icon="chevronRight"></span></button>
+                  <div class="target-picker-menu" role="listbox" hidden></div>
+                </div>
               </div>
               <button class="btn primary" id="btnQuickSend" disabled>
                 <span class="bi" data-icon="send"></span>发送

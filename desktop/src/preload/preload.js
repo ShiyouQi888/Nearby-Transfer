@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('ltp', {
 
   // ── 查询
   getSelf: () => invoke('ltp:getSelf'),
+  getImagePreview: (filePath) => invoke('ltp:getImagePreview', filePath),
   getDevices: () => invoke('ltp:getDevices'),
   getTrusted: () => invoke('ltp:getTrusted'),
   getHistory: () => invoke('ltp:getHistory'),

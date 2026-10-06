@@ -261,6 +261,11 @@ class Discovery extends EventEmitter {
     const probe = P.encodeMessage(P.makeMessage(P.MSG.PROBE, { wantReply: true }, self));
     const sock = this._sock;
 
+    // 先广播/组播一次，兼容手机开启了广播发现但未响应逐 IP 单播的网络；
+    // 后续仍保留逐地址探测，覆盖 AP 隔离或广播被禁用的环境。
+    try { sock.setBroadcast(true); sock.send(probe, 0, probe.length, this.port, '255.255.255.255'); } catch (_) {}
+    try { sock.send(probe, 0, probe.length, this.port, P.MULTICAST_ADDR); } catch (_) {}
+
     let done = 0;
     const total = ips.length;
 

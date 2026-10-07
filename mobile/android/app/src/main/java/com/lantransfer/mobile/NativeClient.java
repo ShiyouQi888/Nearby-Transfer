@@ -18,6 +18,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.io.RandomAccessFile;
 import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -30,20 +32,24 @@ import java.util.concurrent.Executors;
 
 /** Pure Android LTP/1 client. No WebView or Capacitor runtime is required. */
 final class NativeClient {
-    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onIncomingOffer(String label) {} }
+    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onConnectionDetails(String serverName, String serverId, String token, String host) {} default void onRejected(String reason) {} default void onProgress(int percent, boolean receiving) { onProgress(percent); } default void onTransferFinished(boolean incoming, String label, boolean success) {} default void onSendWaiting(List<Uri> files) {} default void onSendAccepted(List<Uri> files) {} default void onSendFailed(List<Uri> files, String error) {} default void onSendRejected(List<Uri> files) {} default void onIncomingOffer(String label) {} default void onIncomingOffer(String label, String deviceName, String ip) { onIncomingOffer(label); } }
     static final int PORT = 53317;
     static final int CHUNK_SIZE = 256 * 1024;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService transferIo = Executors.newSingleThreadExecutor();
-    private final Listener listener; private final String deviceId; private final String deviceName;
-    private ContentResolver resolver; private List<FileRef> pendingFiles = new ArrayList<>(); private String pendingTransferId;
+    private final Listener listener; private final String deviceId; private final String deviceName; private final boolean english;
+    private ContentResolver resolver; private List<FileRef> pendingFiles = new ArrayList<>(); private String pendingTransferId; private List<Uri> pendingSendUris = new ArrayList<>();
     private Socket socket; private OutputStream output; private volatile boolean closed; private int seq;
     private volatile boolean connected;
+    private String remoteDeviceName = "电脑";
+    private String remoteIp = "未知";
+    private String pendingFileNames = "";
     private byte[] receiveBuffer = new byte[0];
-    private final java.util.Map<String, ReceiveFile> receiving = new java.util.HashMap<>();
+    private final java.util.Map<String, ReceiveFile> receiving = new java.util.concurrent.ConcurrentHashMap<>();
     private JSONObject pendingIncomingOffer;
+    private String pendingIncomingLabel = "";
 
-    NativeClient(String deviceId, String deviceName, Listener listener) { this.deviceId = deviceId; this.deviceName = deviceName; this.listener = listener; }
+    NativeClient(String deviceId, String deviceName, Listener listener, boolean english) { this.deviceId = deviceId; this.deviceName = deviceName; this.listener = listener; this.english = english; }
 
     void connect(String host, int port, String pairCode) {
         connectInternal(host, port, new JSONObjectAuth("pair", pairCode, null));
@@ -53,20 +59,24 @@ final class NativeClient {
         connectInternal(host, port, new JSONObjectAuth("pair", null, token));
     }
 
+    void connectPaired(String host, int port, String token) {
+        connectInternal(host, port, new JSONObjectAuth("paired", null, token));
+    }
+
     boolean isConnected() { return connected && socket != null && socket.isConnected() && !socket.isClosed(); }
 
     private void connectInternal(String host, int port, JSONObjectAuth authData) {
         io.execute(() -> {
             try {
-                socket = openSocket(host, port); output = socket.getOutputStream();
+                socket = openSocket(host, port); remoteIp = socket.getInetAddress() == null ? host : socket.getInetAddress().getHostAddress(); output = socket.getOutputStream();
                 JSONObject auth = new JSONObject().put("mode", authData.mode);
                 if (authData.code != null) auth.put("pairCode", authData.code);
                 if (authData.token != null) auth.put("token", authData.token);
                 sendJson(message("hello").put("device", new JSONObject().put("deviceId", deviceId).put("name", deviceName).put("type", "mobile").put("os", "Android")).put("auth", auth));
                 BufferedInputStream input = new BufferedInputStream(socket.getInputStream()); byte[] buffer = new byte[32 * 1024]; int count;
                 while (!closed && (count = input.read(buffer)) != -1) feedIncoming(buffer, count);
-                if (!closed) listener.onClosed();
-            } catch (Exception e) { connected = false; if (!closed) listener.onError(friendlyError(host, port, e)); }
+                if (!closed) { failInterruptedTransfers(); listener.onClosed(); }
+            } catch (Exception e) { connected = false; if (!closed) { failInterruptedTransfers(); listener.onError(friendlyError(host, port, e)); } }
         });
     }
 
@@ -93,10 +103,11 @@ final class NativeClient {
     private void handleMessage(String line) {
         if (line.isEmpty()) return;
         try { JSONObject msg = new JSONObject(line); String type = msg.optString("type");
-            if ("hello_ack".equals(type)) { if (msg.optBoolean("accepted", false)) { connected = true; listener.onConnected(msg.optJSONObject("server") == null ? "电脑" : msg.getJSONObject("server").optString("name", "电脑")); } else listener.onError(reason(msg.optString("reason"))); }
+            if ("hello_ack".equals(type)) { if (msg.optBoolean("accepted", false)) { connected = true; JSONObject server = msg.optJSONObject("server"); remoteDeviceName = server == null ? "电脑" : server.optString("name", "电脑"); listener.onConnected(remoteDeviceName); listener.onConnectionDetails(remoteDeviceName, server == null ? "" : server.optString("deviceId", ""), msg.optString("token", ""), remoteIp); } else listener.onError(reason(msg.optString("reason"))); }
             else if ("send_offer".equals(type)) prepareIncomingOffer(msg);
-            else if ("complete".equals(type)) finishIncomingFile(msg.optString("fileId"));
-            else if ("send_accept".equals(type)) sendPendingFiles(msg);
+            else if ("send_reject".equals(type)) { if (pendingTransferId != null && pendingTransferId.equals(msg.optString("transferId"))) { listener.onTransferFinished(false, pendingFileNames, false); listener.onSendRejected(new ArrayList<>(pendingSendUris)); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = ""; listener.onRejected(msg.optString("reason", "user_denied")); } }
+            else if ("complete".equals(type)) finishIncomingFile(msg.optString("fileId"), msg.optString("path", ""));
+            else if ("send_accept".equals(type)) transferIo.execute(() -> { try { sendPendingFiles(msg); } catch (Exception e) { failPendingSend(e); } });
             else if ("ping".equals(type)) sendJson(message("pong"));
             else if ("error".equals(type)) listener.onError(msg.optString("message", "电脑端返回错误"));
         } catch (Exception ignored) { }
@@ -111,7 +122,7 @@ final class NativeClient {
                 if (receiveBuffer.length < header) return;
                 int payloadLen = ((receiveBuffer[10 + idLen] & 255) << 24) | ((receiveBuffer[11 + idLen] & 255) << 16) | ((receiveBuffer[12 + idLen] & 255) << 8) | (receiveBuffer[13 + idLen] & 255);
                 if (receiveBuffer.length < header + payloadLen) return;
-                String fileId = new String(receiveBuffer, 6, idLen, StandardCharsets.UTF_8); byte[] payload = new byte[payloadLen]; System.arraycopy(receiveBuffer, header, payload, 0, payloadLen); consume(header + payloadLen); receiveChunk(fileId, payload); continue;
+                String fileId = new String(receiveBuffer, 6, idLen, StandardCharsets.UTF_8); int frameSeq = ((receiveBuffer[6 + idLen] & 255) << 24) | ((receiveBuffer[7 + idLen] & 255) << 16) | ((receiveBuffer[8 + idLen] & 255) << 8) | (receiveBuffer[9 + idLen] & 255); byte[] payload = new byte[payloadLen]; System.arraycopy(receiveBuffer, header, payload, 0, payloadLen); consume(header + payloadLen); receiveChunk(fileId, frameSeq, payload); continue;
             }
             int nl = -1; for (int i = 0; i < receiveBuffer.length; i++) if (receiveBuffer[i] == '\n') { nl = i; break; }
             if (nl < 0) return; String line = new String(receiveBuffer, 0, nl, StandardCharsets.UTF_8).trim(); consume(nl + 1); if (!line.isEmpty()) handleMessage(line);
@@ -123,7 +134,12 @@ final class NativeClient {
     private synchronized void prepareIncomingOffer(JSONObject msg) throws Exception {
         String transferId = msg.optString("transferId"); JSONArray files = msg.optJSONArray("files"); if (files == null || files.length() == 0) return;
         pendingIncomingOffer = msg;
-        String label = files.length() == 1 ? files.getJSONObject(0).optString("name", "文件") : files.length() + " 个文件"; listener.onIncomingOffer(label);
+        StringBuilder names = new StringBuilder();
+        int shown = Math.min(files.length(), 20);
+        for (int i = 0; i < shown; i++) { JSONObject file = files.optJSONObject(i); if (file == null) continue; String name = file.optString("name", "文件").replaceAll("[\\r\\n]", " "); names.append("\n• ").append(name).append(" · ").append(android.text.format.Formatter.formatShortFileSize(NativeDiscovery.AppContextHolder.context, file.optLong("size", 0))); }
+        if (files.length() > shown) names.append("\n… ").append(files.length() - shown).append(english ? " more files" : " 个文件未展开");
+        String size = android.text.format.Formatter.formatShortFileSize(NativeDiscovery.AppContextHolder.context, msg.optLong("totalBytes", 0));
+        String label = (english ? files.length() + " file(s) · " : files.length() + " 个文件 · ") + size + names; pendingIncomingLabel = label; listener.onIncomingOffer(label, remoteDeviceName, remoteIp);
     }
 
     void acceptIncomingOffer() {
@@ -137,43 +153,96 @@ final class NativeClient {
         final JSONObject offer;
         synchronized (this) { offer = pendingIncomingOffer; pendingIncomingOffer = null; }
         if (offer == null) return;
-        try { sendJson(message("send_reject").put("transferId", offer.optString("transferId")).put("reason", "user_denied")); } catch (Exception e) { listener.onError("拒绝接收失败"); }
+        try { sendJson(message("send_reject").put("transferId", offer.optString("transferId")).put("reason", "user_denied")); listener.onTransferFinished(true, pendingIncomingLabel, false); pendingIncomingLabel = ""; } catch (Exception e) { listener.onError("拒绝接收失败"); }
     }
 
     private void acceptIncomingOfferNow(JSONObject msg) throws Exception {
         String transferId = msg.optString("transferId"); JSONArray files = msg.optJSONArray("files");
         JSONArray resume = new JSONArray();
         String savePath = "下载/邻传";
-        for (int i = 0; i < files.length(); i++) { JSONObject f = files.getJSONObject(i); String id = f.optString("fileId"); String name = safeName(f.optString("name", "file")); ReceiveFile rf = createReceiveFile(transferId, id, f.optLong("size", 0), name, f.optString("mime", "application/octet-stream")); receiving.put(id, rf); }
+        for (int i = 0; i < files.length(); i++) { JSONObject f = files.getJSONObject(i); String id = f.optString("fileId"); String name = safeName(f.optString("name", "file")); ReceiveFile rf = createReceiveFile(transferId, id, f.optLong("size", 0), name, f.optString("mime", "application/octet-stream"), f.optString("sha256", "")); receiving.put(id, rf); if (rf.received > 0) resume.put(new JSONObject().put("fileId", id).put("receivedBytes", rf.received)); }
         sendJson(message("send_accept").put("transferId", transferId).put("acceptedBy", deviceName).put("resume", resume).put("saveTo", savePath));
     }
 
-    private ReceiveFile createReceiveFile(String transferId, String id, long size, String name, String mime) throws IOException {
-        try {
-            if (Build.VERSION.SDK_INT >= 29 && listener instanceof MainActivity) {
-                ContentValues v = new ContentValues(); v.put(MediaStore.Downloads.DISPLAY_NAME, name); v.put(MediaStore.Downloads.MIME_TYPE, mime); v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/邻传"); v.put(MediaStore.Downloads.IS_PENDING, 1);
-                Uri uri = ((MainActivity) listener).getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v); if (uri != null) return new ReceiveFile(transferId, id, size, name, uri, ((MainActivity) listener).getContentResolver().openOutputStream(uri));
-            }
-        } catch (Exception ignored) { }
-        File dir = new File(((MainActivity) listener).getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "received"); if (!dir.exists()) dir.mkdirs(); File out = new File(dir, name); return new ReceiveFile(transferId, id, size, name, Uri.fromFile(out), new FileOutputStream(out, true));
+    private ReceiveFile createReceiveFile(String transferId, String id, long size, String name, String mime, String sha256) throws IOException {
+        File dir = new File(((MainActivity) listener).getFilesDir(), "incoming-parts"); if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建接收目录");
+        String identity = sha256.isEmpty() ? id + "_" + name + "_" + size : sha256;
+        File part = new File(dir, digestText(identity) + ".part");
+        long received = part.isFile() ? Math.min(part.length(), Math.max(0, size)) : 0;
+        received = received / CHUNK_SIZE * CHUNK_SIZE;
+        try (RandomAccessFile trim = new RandomAccessFile(part, "rw")) { trim.setLength(received); }
+        return new ReceiveFile(transferId, id, size, name, mime, sha256, Uri.fromFile(part), new FileOutputStream(part, true), received);
     }
 
-    private void receiveChunk(String fileId, byte[] payload) throws IOException { ReceiveFile f = receiving.get(fileId); if (f == null) return; f.output.write(payload); f.received += payload.length; if (f.size > 0) listener.onProgress((int) Math.min(99, f.received * 100L / f.size)); }
+    private void receiveChunk(String fileId, int frameSeq, byte[] payload) throws Exception { ReceiveFile f = receiving.get(fileId); if (f == null) return; f.output.write(payload); f.received += payload.length; f.ackedSeq = frameSeq; f.chunksSinceAck++; if (f.chunksSinceAck >= 4) { sendJson(message("chunk_ack").put("transferId", f.transferId).put("fileId", fileId).put("ackedSeq", f.ackedSeq).put("receivedBytes", f.received)); f.chunksSinceAck = 0; } if (f.size > 0) listener.onProgress((int) Math.min(99, f.received * 100L / f.size), true); }
 
-    private void finishIncomingFile(String fileId) throws IOException { ReceiveFile f = receiving.remove(fileId); if (f != null && f.output != null) { f.output.flush(); f.output.close(); if (Build.VERSION.SDK_INT >= 29 && listener instanceof MainActivity && "content".equals(f.uri.getScheme())) { ContentValues v = new ContentValues(); v.put(MediaStore.Downloads.IS_PENDING, 0); ((MainActivity) listener).getContentResolver().update(f.uri, v, null, null); } listener.onProgress(100); } }
+    private void finishIncomingFile(String fileId, String path) throws Exception {
+        ReceiveFile f = receiving.remove(fileId);
+        if (f == null || f.output == null) return;
+        f.output.flush(); f.output.close();
+        File part = new File(f.uri.getPath());
+        if (f.received != f.size) {
+            listener.onError(english ? "Received file is incomplete; reconnect and accept again to resume" : "文件尚未接收完整；重新连接并再次接收即可续传");
+            listener.onTransferFinished(true, f.name, false);
+            return;
+        }
+        if (!f.sha256.isEmpty()) {
+            try {
+                String actual = sha256(part);
+                if (!f.sha256.equalsIgnoreCase(actual)) {
+                    part.delete();
+                    listener.onError(english ? "File verification failed; please resend the file" : "文件校验失败，请重新发送");
+                    listener.onTransferFinished(true, f.name, false);
+                    return;
+                }
+            } catch (Exception verificationError) {
+                part.delete();
+                listener.onError(english ? "Unable to verify the received file" : "无法验证接收文件完整性");
+                listener.onTransferFinished(true, f.name, false);
+                return;
+            }
+        }
+        if (f.chunksSinceAck > 0) sendJson(message("chunk_ack").put("transferId", f.transferId).put("fileId", fileId).put("ackedSeq", f.ackedSeq).put("receivedBytes", f.received));
+        Uri destination = publishReceivedFile(part, f.name, f.mime);
+        sendJson(message("complete").put("transferId", f.transferId).put("fileId", fileId).put("path", path.isEmpty() ? f.name : path).put("size", f.received));
+        part.delete();
+        listener.onProgress(100, true);
+        listener.onTransferFinished(true, f.name, true);
+    }
+
+    private Uri publishReceivedFile(File part, String name, String mime) throws Exception {
+        if (Build.VERSION.SDK_INT >= 29 && listener instanceof MainActivity) {
+            ContentValues values = new ContentValues(); values.put(MediaStore.Downloads.DISPLAY_NAME, uniqueDownloadName(name)); values.put(MediaStore.Downloads.MIME_TYPE, mime); values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/邻传"); values.put(MediaStore.Downloads.IS_PENDING, 1);
+            ContentResolver cr = ((MainActivity) listener).getContentResolver(); Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values); if (uri == null) throw new IOException("无法创建下载文件");
+            try (InputStream input = new FileInputStream(part); OutputStream output = cr.openOutputStream(uri)) { if (output == null) throw new IOException("无法写入下载文件"); byte[] buffer = new byte[64 * 1024]; int count; while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count); }
+            ContentValues ready = new ContentValues(); ready.put(MediaStore.Downloads.IS_PENDING, 0); cr.update(uri, ready, null, null); return uri;
+        }
+        File dir = new File(((MainActivity) listener).getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "received"); if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建下载目录"); File destination = uniqueFile(dir, name);
+        try (InputStream input = new FileInputStream(part); OutputStream output = new FileOutputStream(destination)) { byte[] buffer = new byte[64 * 1024]; int count; while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count); }
+        return Uri.fromFile(destination);
+    }
+
+    private static String uniqueDownloadName(String name) { return name; }
+    private static String digestText(String value) { try { java.security.MessageDigest d = java.security.MessageDigest.getInstance("SHA-256"); byte[] bytes = d.digest(value.getBytes(StandardCharsets.UTF_8)); StringBuilder out = new StringBuilder(); for (byte b : bytes) out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255)); return out.toString(); } catch (Exception e) { return Integer.toHexString(value.hashCode()); } }
+    private static String sha256(File file) throws Exception { java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256"); try (InputStream input = new FileInputStream(file)) { byte[] buffer = new byte[64 * 1024]; int count; while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count); } StringBuilder result = new StringBuilder(); for (byte b : digest.digest()) result.append(String.format(java.util.Locale.ROOT, "%02x", b & 255)); return result.toString(); }
+
+    private static File uniqueFile(File dir, String name) { File candidate = new File(dir, name); if (!candidate.exists()) return candidate; String ext = "", base = name; int dot = name.lastIndexOf('.'); if (dot > 0) { base = name.substring(0, dot); ext = name.substring(dot); } for (int i = 1; i < 10000; i++) { candidate = new File(dir, base + " (" + i + ")" + ext); if (!candidate.exists()) return candidate; } return new File(dir, base + " (" + System.currentTimeMillis() + ")" + ext); }
 
     private static String safeName(String name) { return name.replaceAll("[\\\\/:*?\"<>|]", "_"); }
 
     void sendFiles(ContentResolver resolver, List<Uri> uris) {
-        transferIo.execute(() -> { try { JSONArray files = new JSONArray(); long total = 0; int index = 1; this.resolver = resolver; pendingFiles.clear();
-            for (Uri uri : uris) { FileRef ref = inspect(resolver, uri, "f_" + index++); pendingFiles.add(ref); total += ref.size; files.put(new JSONObject().put("fileId", ref.id).put("name", ref.name).put("size", ref.size).put("mime", ref.mime).put("relPath", ref.name).put("isDir", false).put("mtime", System.currentTimeMillis()).put("chunkSize", CHUNK_SIZE).put("sha256", "")); }
+        transferIo.execute(() -> { try { JSONArray files = new JSONArray(); long total = 0; int index = 1; this.resolver = resolver; pendingFiles.clear(); pendingSendUris = new ArrayList<>(uris);
+            StringBuilder names = new StringBuilder();
+            for (Uri uri : uris) { FileRef ref = inspect(resolver, uri, "f_" + index++); if (!ref.sizeKnown) ref.size = measureSize(resolver, ref.uri); pendingFiles.add(ref); total += ref.size; if (names.length() > 0) names.append(", "); names.append(ref.name); files.put(new JSONObject().put("fileId", ref.id).put("name", ref.name).put("size", ref.size).put("mime", ref.mime).put("relPath", ref.name).put("isDir", false).put("mtime", System.currentTimeMillis()).put("chunkSize", CHUNK_SIZE).put("sha256", sha256(resolver, ref.uri))); }
+            pendingFileNames = names.toString();
             pendingTransferId = "t_a_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
-            sendJson(message("send_offer").put("transferId", pendingTransferId).put("files", files).put("totalBytes", total)); listener.onProgress(0);
-        } catch (Exception e) { listener.onError(e.getMessage() == null ? "发送失败" : e.getMessage()); } });
+            sendJson(message("send_offer").put("transferId", pendingTransferId).put("files", files).put("totalBytes", total)); listener.onProgress(0); listener.onSendWaiting(new ArrayList<>(pendingSendUris));
+        } catch (Exception e) { failPendingSend(e); } });
     }
 
     private void sendPendingFiles(JSONObject accept) throws Exception {
         if (resolver == null || pendingFiles.isEmpty() || pendingTransferId == null) return;
+        listener.onSendAccepted(new ArrayList<>(pendingSendUris));
         JSONArray resume = accept.optJSONArray("resume"); long completed = 0; long total = 0;
         for (FileRef f : pendingFiles) total += f.size;
         for (FileRef f : pendingFiles) {
@@ -182,7 +251,16 @@ final class NativeClient {
             completed += sendFile(f, start, total, completed);
             sendJson(message("complete").put("transferId", pendingTransferId).put("fileId", f.id).put("path", f.name).put("size", f.size));
         }
-        listener.onProgress(100); pendingFiles.clear(); pendingTransferId = null;
+        listener.onProgress(100); listener.onTransferFinished(false, pendingFileNames, true); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = "";
+    }
+
+    private void failPendingSend(Exception error) {
+        String message = error.getMessage() == null ? "发送失败" : error.getMessage();
+        List<Uri> failed = new ArrayList<>(pendingSendUris);
+        if (!failed.isEmpty()) listener.onSendFailed(failed, message);
+        if (!pendingFileNames.isEmpty()) listener.onTransferFinished(false, pendingFileNames, false);
+        pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = "";
+        listener.onError(message);
     }
 
     private long sendFile(FileRef file, long start, long total, long completed) throws Exception {
@@ -199,12 +277,20 @@ final class NativeClient {
     private synchronized void sendBinary(byte[] bytes) throws IOException { output.write(bytes); output.flush(); }
     private static byte[] encodeFrame(String fileId, int seq, byte[] payload, int length) { byte[] id = fileId.getBytes(StandardCharsets.UTF_8); byte[] frame = new byte[14 + id.length + length]; frame[0] = 'L'; frame[1] = 'T'; frame[2] = 'P'; frame[3] = 'C'; frame[4] = (byte) (id.length >>> 8); frame[5] = (byte) id.length; System.arraycopy(id, 0, frame, 6, id.length); int o = 6 + id.length; frame[o] = (byte) (seq >>> 24); frame[o + 1] = (byte) (seq >>> 16); frame[o + 2] = (byte) (seq >>> 8); frame[o + 3] = (byte) seq; frame[o + 4] = (byte) (length >>> 24); frame[o + 5] = (byte) (length >>> 16); frame[o + 6] = (byte) (length >>> 8); frame[o + 7] = (byte) length; System.arraycopy(payload, 0, frame, o + 8, length); return frame; }
 
-    private FileRef inspect(ContentResolver resolver, Uri uri, String id) throws Exception { String name = "文件"; long size = 0; try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) { if (cursor != null && cursor.moveToFirst()) { name = cursor.getString(0) == null ? name : cursor.getString(0); size = cursor.isNull(1) ? 0 : cursor.getLong(1); } } String mime = resolver.getType(uri); return new FileRef(id, uri, name, size, mime == null ? "application/octet-stream" : mime); }
+    private FileRef inspect(ContentResolver resolver, Uri uri, String id) throws Exception { String name = "文件"; long size = 0; boolean sizeKnown = false; try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) { if (cursor != null && cursor.moveToFirst()) { name = cursor.getString(0) == null ? name : cursor.getString(0); if (!cursor.isNull(1)) { size = cursor.getLong(1); sizeKnown = true; } } } String mime = resolver.getType(uri); return new FileRef(id, uri, name, size, sizeKnown, mime == null ? "application/octet-stream" : mime); }
+    private static long measureSize(ContentResolver resolver, Uri uri) throws IOException { try (InputStream input = resolver.openInputStream(uri)) { if (input == null) throw new IOException("无法读取文件"); byte[] buffer = new byte[64 * 1024]; long size = 0; int count; while ((count = input.read(buffer)) != -1) size += count; return size; } }
+    private static String sha256(ContentResolver resolver, Uri uri) throws Exception { java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256"); try (InputStream input = resolver.openInputStream(uri)) { if (input == null) throw new IOException("无法读取文件"); byte[] buffer = new byte[64 * 1024]; int count; while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count); } StringBuilder result = new StringBuilder(); for (byte b : digest.digest()) result.append(String.format(java.util.Locale.ROOT, "%02x", b & 255)); return result.toString(); }
     private JSONObject message(String type) throws Exception { return new JSONObject().put("v", 1).put("type", type).put("seq", ++seq).put("ts", System.currentTimeMillis()).put("deviceId", deviceId); }
     private synchronized void sendJson(JSONObject json) throws IOException { output.write((json.toString() + "\n").getBytes(StandardCharsets.UTF_8)); output.flush(); }
-    void close() { closed = true; connected = false; for (ReceiveFile f : receiving.values()) try { if (f.output != null) f.output.close(); } catch (IOException ignored) {} try { if (socket != null) socket.close(); } catch (IOException ignored) { } io.shutdownNow(); transferIo.shutdownNow(); }
-    private static String reason(String value) { if ("need_pair".equals(value)) return "设备未配对，请在电脑端输入匹配码或扫码配对"; if ("bad_token".equals(value)) return "匹配凭证已失效，请重新配对"; if ("rejected".equals(value)) return "电脑端拒绝了连接"; return "连接被拒绝（" + value + "）"; }
-    private static final class FileRef { final String id; final Uri uri; final String name, mime; final long size; FileRef(String id, Uri uri, String name, long size, String mime) { this.id = id; this.uri = uri; this.name = name; this.size = size; this.mime = mime; } }
+    private void failInterruptedTransfers() {
+        if (!pendingFiles.isEmpty()) { listener.onTransferFinished(false, pendingFileNames, false); pendingFiles.clear(); pendingTransferId = null; pendingFileNames = ""; }
+        for (ReceiveFile f : new ArrayList<>(receiving.values())) { try { if (f.output != null) f.output.close(); } catch (IOException ignored) { } listener.onTransferFinished(true, f.name, false); }
+        receiving.clear(); pendingIncomingOffer = null; pendingIncomingLabel = "";
+    }
+
+    void close() { closed = true; connected = false; try { if (socket != null) socket.close(); } catch (IOException ignored) { } io.shutdownNow(); transferIo.shutdownNow(); failInterruptedTransfers(); }
+    private String reason(String value) { if ("need_pair".equals(value)) return english ? "Device is not paired. Enter the pairing code on the computer." : "设备未配对，请在电脑端输入匹配码或扫码配对"; if ("bad_token".equals(value)) return english ? "Pairing token expired. Please pair again." : "匹配凭证已失效，请重新配对"; if ("rejected".equals(value)) return english ? "The computer rejected the connection." : "电脑端拒绝了连接"; return english ? "Connection rejected (" + value + ")" : "连接被拒绝（" + value + "）"; }
+    private static final class FileRef { final String id; final Uri uri; final String name, mime; long size; final boolean sizeKnown; FileRef(String id, Uri uri, String name, long size, boolean sizeKnown, String mime) { this.id = id; this.uri = uri; this.name = name; this.size = size; this.sizeKnown = sizeKnown; this.mime = mime; } }
     private static final class JSONObjectAuth { final String mode, code, token; JSONObjectAuth(String mode, String code, String token) { this.mode = mode; this.code = code; this.token = token; } }
-    private static final class ReceiveFile { final String transferId, id, name; final long size; final Uri uri; final OutputStream output; long received; ReceiveFile(String transferId, String id, long size, String name, Uri uri, OutputStream output) { this.transferId = transferId; this.id = id; this.size = size; this.name = name; this.uri = uri; this.output = output; } }
+    private static final class ReceiveFile { final String transferId, id, name, mime, sha256; final long size; final Uri uri; final OutputStream output; long received; int ackedSeq = -1, chunksSinceAck; ReceiveFile(String transferId, String id, long size, String name, String mime, String sha256, Uri uri, OutputStream output, long received) { this.transferId = transferId; this.id = id; this.size = size; this.name = name; this.mime = mime; this.sha256 = sha256; this.uri = uri; this.output = output; this.received = received; this.ackedSeq = (int)(received / CHUNK_SIZE) - 1; } }
 }

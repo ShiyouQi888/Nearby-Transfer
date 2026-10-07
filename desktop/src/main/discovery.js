@@ -244,13 +244,21 @@ class Discovery extends EventEmitter {
       ips = expandRange(rangeExpr);
       if (!ips.length) throw new Error(`无法解析网段表达式：${rangeExpr}`);
     } else {
-      // 默认扫描每个本机网卡所在的 /24，避免 /16 等掩码被错误截成 192.168.0.x。
-      for (const { address } of listLocalIPv4()) {
-        const parts = address.split('.');
-        if (parts.length === 4) ips.push(...rangeList(parts.slice(0, 3).join('.'), 1, 254));
+      // 按网卡真实掩码计算网段；大于 4096 个地址时依赖广播/组播发现，
+      // 避免把企业级大网段展开成数万次单播探测。
+      const interfaces = listLocalIPv4();
+      for (const { address, netmask } of interfaces) {
+        if (!netmask) continue;
+        const range = subnetRange(address, netmask);
+        const toInt = (s) => s.split('.').reduce((acc, octet) => (acc * 256) + Number(octet), 0);
+        const start = toInt(range.start), end = toInt(range.end);
+        if (end >= start && end - start < 4096) {
+          const toIp = (n) => [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+          for (let ip = start; ip <= end; ip++) ips.push(toIp(ip));
+        }
       }
       ips = [...new Set(ips)];
-      if (!ips.length) ips = rangeList('192.168.1', 1, 254);
+      if (!ips.length && !interfaces.length) ips = rangeList('192.168.1', 1, 254);
     }
 
     this._scanning = true;
@@ -258,6 +266,7 @@ class Discovery extends EventEmitter {
 
     const self = this.self.deviceId;
     const before = new Set(this.devices.keys());
+    const scanStartedAt = Date.now();
     const probe = P.encodeMessage(P.makeMessage(P.MSG.PROBE, { wantReply: true }, self));
     const sock = this._sock;
 
@@ -265,6 +274,15 @@ class Discovery extends EventEmitter {
     // 后续仍保留逐地址探测，覆盖 AP 隔离或广播被禁用的环境。
     try { sock.setBroadcast(true); sock.send(probe, 0, probe.length, this.port, '255.255.255.255'); } catch (_) {}
     try { sock.send(probe, 0, probe.length, this.port, P.MULTICAST_ADDR); } catch (_) {}
+    for (const { address, netmask } of listLocalIPv4()) {
+      if (!netmask) continue;
+      try {
+        const { end } = subnetRange(address, netmask);
+        const broadcast = (Number(end.split('.')[0]) * 0x1000000 + Number(end.split('.')[1]) * 0x10000 + Number(end.split('.')[2]) * 0x100 + Number(end.split('.')[3]) + 1) >>> 0;
+        const directed = [broadcast >>> 24, (broadcast >>> 16) & 255, (broadcast >>> 8) & 255, broadcast & 255].join('.');
+        sock.send(probe, 0, probe.length, this.port, directed);
+      } catch (_) {}
+    }
 
     let done = 0;
     const total = ips.length;
@@ -292,9 +310,9 @@ class Discovery extends EventEmitter {
     await new Promise((r) => setTimeout(r, Math.min(timeoutMs, 900)));
 
     this._scanning = false;
-    const found = this.list().filter((d) => !before.has(d.deviceId) || d.lastSeen > Date.now() - timeoutMs - 500);
+    const found = this.list().filter((d) => !before.has(d.deviceId) || d.lastSeen >= scanStartedAt - 100);
     this.emit('scan:done', { total, found: found.length });
-    return { total, scanned: done, found: this.list(), cancelled: this._scanAbort };
+    return { total, scanned: done, found, cancelled: this._scanAbort };
   }
 
   cancelScan() { this._scanAbort = true; }

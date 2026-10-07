@@ -430,7 +430,7 @@ async function buildSendList(absPaths, opts = {}) {
         isDir: false,
         mtime: st.mtimeMs,
         chunkSize,
-        sha256: '',          // 需要整文件校验时可在 opts.checksum 打开
+        sha256: opts.checksum ? await sha256File(p) : '',
       },
     });
   }

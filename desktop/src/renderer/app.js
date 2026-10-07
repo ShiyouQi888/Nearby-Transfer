@@ -131,7 +131,9 @@ function toast(msg, kind) {
 function notify(title, body) {
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, { body, silent: false, icon: 'logo.png', dir: 'auto', lang: 'zh-CN' });
+      const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
+      const notification = new Notification(window.LTP_I18N ? window.LTP_I18N.t(title) : title, { body: window.LTP_I18N ? window.LTP_I18N.t(body) : body, silent: false, icon: 'logo.png', dir: 'auto', lang: isEnglish ? 'en' : 'zh-CN' });
+      notification.onclick = () => { api.winFocus(); window.focus(); };
     }
     else if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
   } catch (_) {}
@@ -144,7 +146,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
     const tab = btn.dataset.tab;
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === 'tab-' + tab));
-    if (tab === 'pair') refreshQr();
+    if (tab === 'devices') refreshQr();
     if (tab === 'trusted') renderTrusted();
     if (tab === 'history') renderHistory();
     if (tab === 'received') renderReceived();
@@ -154,6 +156,17 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
 
 // ── 渲染：自身信息 ───────────────────────────────────
 
+function subnetForInterface(address, netmask) {
+  if (!address || !netmask) return null;
+  const toInt = (ip) => ip.split('.').reduce((value, octet) => ((value << 8) | Number(octet)) >>> 0, 0);
+  const toIp = (value) => [value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join('.');
+  const ipNumber = toInt(address), maskNumber = toInt(netmask), network = (ipNumber & maskNumber) >>> 0;
+  const broadcast = (network | (~maskNumber >>> 0)) >>> 0;
+  const start = network + 1, end = broadcast - 1;
+  const prefix = netmask.split('.').reduce((sum, octet) => sum + Number(octet).toString(2).replace(/0/g, '').length, 0);
+  return { network: toIp(network), prefix, start, end, range: end >= start && end - start < 4096 ? `${toIp(start)}-${toIp(end)}` : null };
+}
+
 async function loadSelf() {
   const self = await api.getSelf();
   S.self = self;
@@ -162,20 +175,24 @@ async function loadSelf() {
   $('statusPill').classList.remove('bad');
 
   // 当前网络：默认取第一个局域网地址所在网段
-  const first = (self.lanIPs && self.lanIPs[0] && self.lanIPs[0].address) || self.ip || '';
-  $('netAddr').textContent = first.replace(/\.\d+$/, '.0/24') || '—';
+  const firstInterface = self.lanIPs && self.lanIPs[0];
+  const first = (firstInterface && firstInterface.address) || self.ip || '';
+  const firstSubnet = firstInterface && subnetForInterface(firstInterface.address, firstInterface.netmask);
+  $('netAddr').textContent = firstSubnet ? `${firstSubnet.network}/${firstSubnet.prefix}` : (first || '—');
+  if ($('localIp')) $('localIp').textContent = (self.lanIPs || []).map((x) => x.address).join(' / ') || self.ip || '—';
 
   // 下拉：列出所有局域网网段（自动探测用）
   const sel = $('netSel');
   const cur = sel.value;
   sel.innerHTML = '<option value="">自动</option>'
     + (self.lanIPs || []).map((x) => {
-      const cidr = x.address.replace(/\.\d+$/, '.0/24');
-      return `<option value="${esc(x.address.replace(/\.\d+$/, ''))}">${esc(cidr)}</option>`;
+      const subnet = subnetForInterface(x.address, x.netmask);
+      const label = subnet ? `${subnet.network}/${subnet.prefix}` : x.address;
+      return `<option value="${esc(`${x.address}|${x.netmask || ''}`)}">${esc(label)}</option>`;
     }).join('');
   if (cur) sel.value = cur;
 
-  $('scanRange').placeholder = `或指定网段 ${(first && first.replace(/\.\d+$/, '.1-254')) || '192.168.1.1-254'}`;
+  $('scanRange').placeholder = `或指定网段 ${(firstSubnet && firstSubnet.range) || '192.168.1.1-254'}`;
 }
 
 // ── 渲染：设备列表 ───────────────────────────────────
@@ -249,17 +266,28 @@ function esc(s) {
 
 // ── 发送流程 ─────────────────────────────────────────
 
-$('btnPickFiles').addEventListener('click', async () => {
-  const paths = await api.pickFiles();
-  if (paths.length) { S.picks.push(...paths); S.pickSelection.push(...paths.map(() => true)); renderPicks(); }
-});
-$('btnPickFolder').addEventListener('click', async () => {
-  const paths = await api.pickFolder();
-  if (paths.length) { S.picks.push(...paths); S.pickSelection.push(...paths.map(() => true)); renderPicks(); }
-});
 $('btnClearPick').addEventListener('click', () => { S.picks = []; S.pickSelection = []; renderPicks(); });
 $('btnSelectAllPick').addEventListener('click', () => { S.pickSelection = S.picks.map(() => true); renderPicks(); });
 $('btnClearSelectedPick').addEventListener('click', () => { S.pickSelection = S.picks.map(() => false); renderPicks(); });
+
+$('btnPickFolder').addEventListener('click', async () => addDroppedPaths(await api.pickFolder()));
+
+function addDroppedPaths(paths) {
+  const fresh = (paths || []).filter((p) => p && !S.picks.some((existing) => typeof existing === 'string' && existing === p));
+  if (!fresh.length) return;
+  S.picks.push(...fresh); S.pickSelection.push(...fresh.map(() => true)); renderPicks();
+  toast(`已添加 ${fresh.length} 项到发送队列`, 'ok');
+}
+
+const dropzone = $('sendDropzone');
+if (dropzone) {
+  ['dragenter', 'dragover'].forEach((eventName) => dropzone.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('is-dragging'); }));
+  ['dragleave', 'drop'].forEach((eventName) => dropzone.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('is-dragging'); }));
+  dropzone.addEventListener('drop', (e) => addDroppedPaths([...e.dataTransfer.files].map((file) => file.path).filter(Boolean)));
+  const chooseFromDropzone = async () => addDroppedPaths(await api.pickFiles());
+  dropzone.addEventListener('click', chooseFromDropzone);
+  dropzone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chooseFromDropzone(); } });
+}
 
 $('quickTarget').addEventListener('click', (e) => {
   const root = $('quickTarget');
@@ -270,6 +298,31 @@ $('quickTarget').addEventListener('click', (e) => {
   const open = menu.hidden;
   menu.hidden = !open;
   root.setAttribute('aria-expanded', String(open));
+});
+$('quickTarget').addEventListener('keydown', (e) => {
+  const root = $('quickTarget');
+  const menu = root.querySelector('.target-picker-menu');
+  const options = [...menu.querySelectorAll('[data-target-id]')];
+  if (!options.length) return;
+  if (e.key === 'Escape') {
+    menu.hidden = true;
+    root.setAttribute('aria-expanded', 'false');
+    root.querySelector('.target-picker-trigger').focus();
+    e.preventDefault();
+    return;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (menu.hidden) {
+      menu.hidden = false;
+      root.setAttribute('aria-expanded', 'true');
+      options[0].focus();
+    } else {
+      const current = options.indexOf(document.activeElement);
+      const next = (current + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      options[next].focus();
+    }
+  }
 });
 document.addEventListener('click', (e) => {
   const root = $('quickTarget');
@@ -359,7 +412,7 @@ function renderQuickTargets() {
     ? `${current.name || current.deviceId}${current.type === 'mobile' ? ' · 手机' : ' · 电脑'}`
     : (items.length ? '请选择在线设备' : '暂无在线设备，请先扫描');
   const menu = select.querySelector('.target-picker-menu');
-  menu.innerHTML = items.map((d) => `<button type="button" class="target-picker-option${d.deviceId === S.quickTargetId ? ' selected' : ''}" data-target-id="${esc(d.deviceId)}" role="option">${window.Icons.icon(d.type === 'mobile' ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}<span>${esc(d.name || d.deviceId)}</span><small>${d.type === 'mobile' ? '手机' : '电脑'}</small></button>`).join('');
+  menu.innerHTML = items.map((d) => `<button type="button" class="target-picker-option${d.deviceId === S.quickTargetId ? ' selected' : ''}" data-target-id="${esc(d.deviceId)}" role="option" aria-selected="${d.deviceId === S.quickTargetId}">${window.Icons.icon(d.type === 'mobile' ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}<span>${esc(d.name || d.deviceId)}</span><small>${d.type === 'mobile' ? '手机' : '电脑'}</small></button>`).join('');
   menu.querySelectorAll('[data-target-id]').forEach((option) => option.addEventListener('click', () => {
     S.quickTargetId = option.dataset.targetId;
     menu.hidden = true;
@@ -408,9 +461,10 @@ function goto(tab) {
 // ── 网段扫描 ─────────────────────────────────────────
 
 $('btnScan').addEventListener('click', async () => {
-  const selPre = $('netSel').value;   // 形如 192.168.1
+  const selectedInterface = $('netSel').value;
   const typed = $('scanRange').value.trim();
-  const range = typed || (selPre ? `${selPre}.1-254` : null);
+  const [selectedIp, selectedMask] = selectedInterface.split('|');
+  const range = typed || (selectedIp && selectedMask ? subnetForInterface(selectedIp, selectedMask).range : null);
   const btn = $('btnScan');
   btn.disabled = true;
   btn.innerHTML = `<span class="bi" data-icon="search"></span>扫描中…`;
@@ -418,19 +472,28 @@ $('btnScan').addEventListener('click', async () => {
   $('scanBar').hidden = false;
   $('scanFill').style.width = '0%';
   $('scanText').textContent = '正在并发探测…';
-
-  const r = await api.scan(range);
-  await loadDevices();
-  renderDevices();
-
-  btn.disabled = false;
-  btn.innerHTML = `<span class="bi" data-icon="search"></span>扫描网络`;
-  fillIcons(btn);
-  $('scanBar').hidden = true;
-  if (r && r.error) { toast('扫描失败：' + r.error, 'err'); return; }
-  const found = (r.found || []).filter((d) => d.deviceId !== (S.self && S.self.deviceId));
-  toast(`扫描完成：探测 ${r.scanned} 个地址，发现在线设备 ${found.length} 台`, found.length ? 'ok' : '');
-  if (typed) $('scanRange').value = '';
+  document.body.classList.add('is-scanning');
+  $('radarStage')?.classList.add('is-scanning');
+  if ($('radarStatus')) $('radarStatus').textContent = '正在扫描';
+  try {
+    const r = await api.scan(range);
+    if (r && r.error) { toast('扫描失败：' + r.error, 'err'); return; }
+    const found = (r.found || []).filter((d) => d.deviceId !== (S.self && S.self.deviceId));
+    S.devices = found;
+    renderDevices();
+    toast(`扫描完成：探测 ${r.scanned} 个地址，发现在线设备 ${found.length} 台`, found.length ? 'ok' : '');
+    if (typed) $('scanRange').value = '';
+  } catch (e) {
+    toast('扫描失败：' + (e.message || e), 'err');
+  } finally {
+    document.body.classList.remove('is-scanning');
+    $('radarStage')?.classList.remove('is-scanning');
+    if ($('radarStatus')) $('radarStatus').textContent = '扫描待命';
+    btn.disabled = false;
+    btn.innerHTML = `<span class="bi" data-icon="search"></span>扫描网络`;
+    fillIcons(btn);
+    $('scanBar').hidden = true;
+  }
 });
 
 // ── 配对：二维码 ─────────────────────────────────────
@@ -518,6 +581,11 @@ $('btnCopyCode').addEventListener('click', async () => {
   if (!/^\d{6}$/.test(code)) { toast('请先生成匹配码', 'err'); return; }
   await api.copyText(code);
   toast('匹配码已复制：' + code, 'ok');
+});
+$('btnCopyIp').addEventListener('click', async () => {
+  const ip = $('localIp').textContent.trim();
+  if (!ip || ip === '—') { toast('暂无可复制的本机 IP', 'err'); return; }
+  await api.copyText(ip); toast('本机 IP 已复制：' + ip, 'ok');
 });
 
 // ── 传输进度渲染 ─────────────────────────────────────
@@ -681,7 +749,6 @@ async function renderAbout() {
   const info = APP_INFO || {};
 
   if ($('aboutVersion')) $('aboutVersion').textContent = info.version || '1.0.0';
-  if ($('setAboutVersion')) $('setAboutVersion').textContent = info.version || '1.0.0';
   if ($('aboutProtocol')) $('aboutProtocol').textContent = info.protocol || 'LTP/1';
 
   const rows = [
@@ -742,18 +809,6 @@ function bindContactRows() {
   });
 }
 
-/** 设置弹窗内的「常规 / 关于」页签切换。 */
-function bindModalTabs() {
-  document.querySelectorAll('.mtab').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const name = btn.dataset.mtab;
-      document.querySelectorAll('.mtab').forEach((b) => b.classList.toggle('active', b === btn));
-      document.querySelectorAll('.mpane').forEach((p) => p.classList.toggle('active', p.id === 'mpane-' + name));
-      if (name === 'about') renderAbout();
-    });
-  });
-}
-
 // ── 接收确认弹窗 ─────────────────────────────────────
 
 function showOffer(offer) {
@@ -778,7 +833,8 @@ function showOffer(offer) {
 
   $('offerModal').hidden = false;
   renderReceived();
-  notify('收到文件', `${devName} 请求发送 ${offer.files.length} 个文件`);
+  const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
+  notify(isEnglish ? 'Incoming files' : '收到文件', isEnglish ? `${devName} wants to send ${offer.files.length} file(s)` : `${devName} 请求发送 ${offer.files.length} 个文件`);
 }
 
 function renderReceived() {
@@ -834,9 +890,6 @@ $('btnSettings').addEventListener('click', async () => {
   if (!$('firewallStatus').dataset.ready) {
     $('firewallStatus').textContent = '启动时自动配置；如被系统拦截，请点击“自动配置”并允许管理员权限。';
   }
-  // 每次打开都回到「常规」页签，避免上次停留在「关于」让用户以为设置项丢了
-  document.querySelectorAll('.mtab').forEach((b) => b.classList.toggle('active', b.dataset.mtab === 'general'));
-  document.querySelectorAll('.mpane').forEach((p) => p.classList.toggle('active', p.id === 'mpane-general'));
   $('settingsModal').hidden = false;
 });
 
@@ -871,6 +924,13 @@ $('btnSaveSettings').addEventListener('click', async () => {
 });
 
 $('btnRefresh').addEventListener('click', async () => { await loadDevices(); toast('设备列表已刷新'); });
+
+function bindLanguageControl(control) {
+  if (!control || control.dataset.bound === '1') return;
+  control.dataset.bound = '1';
+  control.value = window.LTP_I18N ? window.LTP_I18N.getLanguage() : 'zh-CN';
+  control.addEventListener('change', () => window.LTP_I18N && window.LTP_I18N.setLanguage(control.value));
+}
 
 // ── 窗口控制（自绘标题栏） ───────────────────────────
 // 最大化按钮的图标需随窗口状态在「最大化 / 还原」之间切换。
@@ -956,7 +1016,8 @@ function bindEvents() {
           renderTransfers();
           if (ev === 'transfer:complete' && t.status === 'done') {
             toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
-            notify('传输完成', `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
+            const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
+            notify(isEnglish ? 'Transfer complete' : '传输完成', isEnglish ? `${t.direction === 'send' ? 'Sent' : 'Received'} ${t.files.length} file(s)` : `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
             if (t.direction === 'receive') {
               (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', path: f.path || '', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
               renderReceived();
@@ -1032,14 +1093,23 @@ async function loadDevices() {
   renderDevices();
 }
 
+function arrangePages() {
+  const devices = $('tab-devices');
+  const pair = $('pairSection');
+  const quick = $('quickSendCard');
+  const workspace = $('sendWorkspace');
+  if (quick && workspace) workspace.appendChild(quick);
+  if (pair && devices) devices.appendChild(pair);
+}
+
 // ── 启动 ─────────────────────────────────────────────
 
 (async function boot() {
+  arrangePages();
   fillIcons();          // 先注入静态图标
   fillIllusts();        // 注入场景插画（hero / 侧栏）
   bindEvents();
   bindContactRows();    // 关于页的联系方式点击行为
-  bindModalTabs();      // 设置弹窗的「常规 / 关于」页签
   await loadSelf();
   S.trusted = await api.getTrusted() || [];
   S.sessions = await api.getSessions() || [];
@@ -1058,7 +1128,7 @@ async function loadDevices() {
   await newCodeQuiet();
   await refreshQr();
   const language = $('setLanguage');
-  if (language) { language.value = window.LTP_I18N ? window.LTP_I18N.getLanguage() : 'zh-CN'; language.addEventListener('change', () => window.LTP_I18N.setLanguage(language.value)); }
+  bindLanguageControl(language);
 
   // 初始化最大化按钮状态（窗口可能以最大化启动，或上次退出时是最大化）
   setWinMaxIcon(!!(await api.winIsMaximized()));

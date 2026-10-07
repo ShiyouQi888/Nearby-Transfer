@@ -24,6 +24,7 @@
       </div>
     </div>
     <div class="titlebar-actions">
+      <button class="top-language" id="topLanguage" type="button" title="选择语言" aria-label="选择语言">中</button>
       <button class="tb-btn" id="btnRefresh"><span class="tb-ic" data-icon="refresh"></span>刷新</button>
       <button class="tb-btn" id="btnSettings"><span class="tb-ic" data-icon="settings"></span>设置</button>
       <span class="pill" id="statusPill"><span class="tb-ic" data-icon="wifi"></span>运行中</span>
@@ -40,8 +41,8 @@
   <div class="body">
     <nav class="sidenav">
       <div class="nav-label">连接与设备</div>
-      <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>设备</button>
-      <button class="nav-item" data-tab="pair"><span class="ni" data-icon="link"></span>配对</button>
+      <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>连接</button>
+      <button class="nav-item" data-tab="send"><span class="ni" data-icon="send"></span>发送</button>
       <div class="nav-label">传输中心</div>
       <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span>传输</button>
       <button class="nav-item" data-tab="received"><span class="ni" data-icon="inbox"></span>接收</button>
@@ -74,7 +75,17 @@
           </div>
 
           <div class="hero-mid">
-            <div class="hero-illust" data-illust="devices"></div>
+            <div class="hero-illust radar-stage" id="radarStage" aria-label="网络扫描雷达">
+              <div class="radar-scope" aria-hidden="true">
+                <i class="radar-sweep"></i>
+                <i class="radar-ring ring-a"></i><i class="radar-ring ring-b"></i><i class="radar-ring ring-c"></i>
+                <i class="radar-axis axis-x"></i><i class="radar-axis axis-y"></i>
+                <i class="radar-core"></i>
+                <i class="radar-blip blip-a"></i><i class="radar-blip blip-b"></i><i class="radar-blip blip-c"></i>
+              </div>
+              <div class="radar-caption"><span class="radar-live-dot"></span><span id="radarStatus">扫描待命</span></div>
+              <div class="radar-art" data-illust="devices"></div>
+            </div>
             <div class="hero-cta">
               <div class="net-select">
                 <span>当前网络：</span>
@@ -106,7 +117,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="quickSendCard">
           <div class="card-head">
             <div class="ch-left">
               <div class="ic-chip" data-icon="send"></div>
@@ -118,12 +129,7 @@
           </div>
 
           <div class="card-body">
-            <div class="send-grid">
-              <button class="act-card" id="btnPickFiles">
-                <span class="ic-chip sm" data-icon="folderOpen"></span>
-                <span class="ac-label">选择文件</span>
-                <span class="ac-go" data-icon="chevronRight"></span>
-              </button>
+            <div class="send-tools">
               <button class="act-card" id="btnPickFolder">
                 <span class="ic-chip sm" data-icon="folderPlus"></span>
                 <span class="ac-label">选择文件夹</span>
@@ -152,9 +158,9 @@
             <div class="quick-send-bar">
               <div class="quick-send-target">
                 <span class="qs-label"><span class="bi" data-icon="send"></span>发送到</span>
-                <div class="target-picker" id="quickTarget" role="combobox" aria-label="选择发送目标" aria-expanded="false">
-                  <button class="target-picker-trigger" type="button"><span class="target-picker-label">请先选择目标设备</span><span class="target-picker-chevron" data-icon="chevronRight"></span></button>
-                  <div class="target-picker-menu" role="listbox" hidden></div>
+                <div class="target-picker" id="quickTarget" role="combobox" aria-label="选择发送目标" aria-expanded="false" aria-controls="quickTargetMenu">
+                  <button class="target-picker-trigger" type="button" aria-haspopup="listbox" aria-controls="quickTargetMenu"><span class="target-picker-label">请先选择目标设备</span><span class="target-picker-chevron" data-icon="chevronRight"></span></button>
+                  <div class="target-picker-menu" id="quickTargetMenu" role="listbox" hidden></div>
                 </div>
               </div>
               <button class="btn primary" id="btnQuickSend" disabled>
@@ -182,8 +188,8 @@
         </div>
       </section>
 
-      <!-- 配对 -->
-      <section class="tab" id="tab-pair">
+      <!-- 配对（由脚本并入连接页面） -->
+      <div class="pair-section" id="pairSection">
         <div class="pair-grid">
           <div class="card">
             <div class="card-head">
@@ -211,6 +217,10 @@
               <button class="btn ghost" id="btnCopyCode"><span class="bi" data-icon="copy"></span>复制</button>
             </div>
             <div class="code-timer" id="codeTimer"></div>
+            <div class="local-ip-row">
+              <div><span class="local-ip-label">本机 IP 地址</span><strong id="localIp">—</strong></div>
+              <button class="btn ghost small" id="btnCopyIp"><span class="bi" data-icon="copy"></span>复制 IP</button>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -224,8 +234,24 @@
             <li>未配对设备会被直接拒绝连接，只有通过二维码或匹配码配对后的设备才能传输。</li>
             <li>配对成功后电脑会下发长期令牌，手机端下次连接免配对。</li>
             <li>所有数据仅在局域网内传输，不经过任何外网服务器。</li>
+            <li>当前传输链路未加密，请仅在可信的家庭或办公局域网中使用。</li>
           </ul>
         </div>
+      </div>
+
+      <!-- 独立发送页面 -->
+      <section class="tab" id="tab-send">
+        <div class="send-page-intro">
+          <div class="ic-chip" data-icon="send"></div>
+          <div><h2>发送文件</h2><div class="card-desc">拖入文件即可加入队列，选择目标设备后发送。</div></div>
+        </div>
+        <div class="send-dropzone" id="sendDropzone" tabindex="0" role="button" aria-label="拖拽文件或点击选择文件">
+          <div class="drop-icon" data-icon="upload"></div>
+          <h3>拖拽文件到这里</h3>
+          <p>支持多个文件、文件夹和批量发送</p>
+          <span>点击此区域选择文件</span>
+        </div>
+        <div id="sendWorkspace"></div>
       </section>
 
       <!-- 传输 -->
@@ -315,7 +341,7 @@
           </div>
           <p class="about-desc">
             邻传是一款面向局域网的跨设备文件互传工具。所有文件仅在同一 Wi-Fi 下点对点直传，
-            不经过任何第三方服务器，也不上传云端；未配对的设备一律拒绝连接。
+            不经过任何第三方服务器，也不上传云端；未配对的设备一律拒绝连接。当前传输链路未加密，请仅在可信局域网中使用。
           </p>
         </div>
 
@@ -406,17 +432,12 @@
   </div>
 </div>
 
-<!-- 设置弹窗（常规 / 关于 两个页签） -->
+<!-- 设置弹窗：只保留本机运行配置；版本、版权与联系信息统一放在独立“关于”页面 -->
 <div class="modal-mask" id="settingsModal" hidden>
   <div class="modal">
     <div class="modal-head">
       <div class="dot-badge" data-icon="settings"></div>
       <div><h3>设置</h3><p>本机身份、接收目录与软件信息</p></div>
-    </div>
-
-    <div class="mtabs">
-      <button class="mtab active" data-mtab="general">常规</button>
-      <button class="mtab" data-mtab="about">关于</button>
     </div>
 
     <div class="mpane active" id="mpane-general">
@@ -449,45 +470,6 @@
           <button class="btn ghost small" id="btnFixFirewall">自动配置</button>
         </div>
         <div class="field-hint">仅允许专用/域网络访问邻传端口 53317，不开放公网。</div>
-      </div>
-    </div>
-
-    <div class="mpane" id="mpane-about">
-      <div class="mini-brand">
-        <div class="mini-logo"></div>
-        <div>
-          <div class="mini-name">邻传 <span>Nearby Transfer</span></div>
-          <div class="mini-ver">版本 v<span id="setAboutVersion">—</span> · 协议 LTP/1</div>
-        </div>
-      </div>
-      <div class="mini-sec">
-        <div class="mini-sec-t">联系方式</div>
-        <ul class="contact-list compact">
-          <li>
-            <div class="contact-row static">
-              <span class="ct-ic" data-icon="user"></span>
-              <span class="ct-body"><span class="ct-label">作者</span><span class="ct-value">齐世有</span></span>
-            </div>
-          </li>
-          <li>
-            <button class="contact-row" data-mail="blacklaw@foxmail.com">
-              <span class="ct-ic" data-icon="inbox"></span>
-              <span class="ct-body"><span class="ct-label">邮箱</span><span class="ct-value">blacklaw@foxmail.com</span></span>
-              <span class="ct-act" data-icon="chevronRight"></span>
-            </button>
-          </li>
-          <li>
-            <button class="contact-row" data-site="https://linchuan.aeback.com">
-              <span class="ct-ic" data-icon="wifi"></span>
-              <span class="ct-body"><span class="ct-label">官网</span><span class="ct-value">linchuan.aeback.com</span></span>
-              <span class="ct-act" data-icon="chevronRight"></span>
-            </button>
-          </li>
-        </ul>
-      </div>
-      <div class="mini-sec">
-        <div class="mini-sec-t">版权</div>
-        <p class="about-copy">© 2026 邻传 Nearby Transfer · 保留所有权利。<br />界面字体：思源黑体（SIL Open Font License 1.1）</p>
       </div>
     </div>
 

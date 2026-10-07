@@ -335,7 +335,7 @@ class Session extends EventEmitter {
    */
   async startSend(absPaths, opts = {}) {
     if (!this._requirePaired()) return { ok: false, reason: 'not_paired' };
-    const list = await buildSendList(absPaths, opts);
+    const list = await buildSendList(absPaths, { ...opts, checksum: opts.checksum || (this.peerDevice && this.peerDevice.type === 'mobile') });
     if (!list.length) return { ok: false, reason: 'empty' };
     this._sendOpts = { maxBytesPerSec: opts.maxBytesPerSec || 0 };
 

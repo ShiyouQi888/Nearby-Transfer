@@ -12,6 +12,7 @@ const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 contextBridge.exposeInMainWorld('ltp', {
   // ── 窗口控制（自绘标题栏）
   winMinimize: () => invoke('ltp:winMinimize'),
+  winFocus: () => invoke('ltp:winFocus'),
   winToggleMaximize: () => invoke('ltp:winToggleMaximize'),
   winClose: () => invoke('ltp:winClose'),
   winIsMaximized: () => invoke('ltp:winIsMaximized'),

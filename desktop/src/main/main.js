@@ -55,7 +55,20 @@ function appVersion() {
       if (pkg.version) return String(pkg.version);
     }
   } catch (_) { /* 读不到就回退 */ }
-  try { return app.getVersion(); } catch (_) { return '1.0.2'; }
+  try { return app.getVersion(); } catch (_) { return '1.0.3'; }
+}
+
+function appResource(name) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, name)
+    : path.join(__dirname, '..', '..', 'resources', name);
+}
+
+function showMainWindow() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 }
 
 function checkGithubRelease() {
@@ -293,7 +306,7 @@ function startServices() {
 // ─────────────────────────────────────────────────────────────
 
 function createWindow() {
-  const iconPath = path.join(__dirname, '..', '..', 'resources', 'icon.png');
+  const iconPath = appResource('icon.png');
   win = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -322,6 +335,11 @@ function createWindow() {
 
   // 首帧就绪后再显示，避免深色界面出现白色闪屏
   win.once('ready-to-show', () => win.show());
+  // Minimize means "send to tray". The tray icon is bundled as an extra resource
+  // (outside app.asar), so Windows keeps a visible restore/quit entry point.
+  win.on('minimize', (event) => {
+    if (!app.isQuitting) { event.preventDefault(); win.hide(); }
+  });
 
   // 最大化状态变化时主动通知渲染层，保证「最大化/还原」按钮图标与实际状态同步
   const pushWinState = () => {
@@ -361,17 +379,21 @@ function hookScreenshot(win) {
 
 function createTray() {
   try {
-    const iconPath = path.join(__dirname, '..', '..', 'resources', 'tray.png');
-    const img = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+    const trayPath = appResource('tray.png');
+    const fallbackPath = appResource('icon.png');
+    const trayImage = fs.existsSync(trayPath) ? nativeImage.createFromPath(trayPath) : nativeImage.createEmpty();
+    const img = trayImage.isEmpty() && fs.existsSync(fallbackPath) ? nativeImage.createFromPath(fallbackPath) : trayImage;
+    if (img.isEmpty()) throw new Error('Tray and app icons are unavailable');
     tray = new Tray(img);
     tray.setToolTip('邻传 Nearby Transfer');
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: '打开主界面', click: () => { if (win) win.show(); else createWindow(); } },
+      { label: '打开邻传 / Open Nearby Transfer', click: showMainWindow },
       { type: 'separator' },
-      { label: '退出', click: () => { app.isQuitting = true; app.quit(); } },
+      { label: '退出 / Quit', click: () => { app.isQuitting = true; app.quit(); } },
     ]));
-    tray.on('click', () => { if (win) win.show(); else createWindow(); });
-  } catch (_) { /* 托盘图标缺失时静默跳过 */ }
+    tray.on('click', showMainWindow);
+    tray.on('double-click', showMainWindow);
+  } catch (error) { console.error('[tray] Unable to create tray icon:', error); }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -381,6 +403,7 @@ function createTray() {
 function registerIpc() {
   // ── 窗口控制（自绘标题栏）
   ipcMain.handle('ltp:winMinimize', () => { if (win && !win.isDestroyed()) win.minimize(); return true; });
+  ipcMain.handle('ltp:winFocus', () => { showMainWindow(); return true; });
   ipcMain.handle('ltp:winToggleMaximize', () => {
     if (!win || win.isDestroyed()) return { maximized: false };
     if (win.isMaximized()) win.unmaximize(); else win.maximize();
@@ -657,7 +680,7 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
+  app.on('second-instance', showMainWindow);
 
   app.whenReady().then(() => {
     loadStore();

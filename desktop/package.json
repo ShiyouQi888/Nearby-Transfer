@@ -1,6 +1,6 @@
 {
   "name": "lan-transfer-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "邻传 Nearby Transfer · Windows 电脑端 (LTP/1)",
   "author": "齐世有 <blacklaw@foxmail.com>",
@@ -38,6 +38,14 @@
       {
         "from": "../shared",
         "to": "shared"
+      },
+      {
+        "from": "resources/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "resources/tray.png",
+        "to": "tray.png"
       }
     ],
     "win": {
@@ -50,11 +58,13 @@
       ]
     },
     "nsis": {
+      "artifactName": "Nearby-Transfer-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "language": 2052,
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": ["zh_CN", "en_US"],
       "displayLanguageSelector": true,
+      "include": "resources/installer.nsh",
       "license": "resources/license.txt",
       "installerHeader": "resources/installer-header.bmp",
       "installerSidebar": "resources/installer-sidebar.bmp",

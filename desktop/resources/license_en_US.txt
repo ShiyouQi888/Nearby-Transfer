@@ -1,0 +1,11 @@
+﻿Nearby Transfer End User License Agreement
+
+Welcome to Nearby Transfer. Please read and accept these terms before installing or using the software:
+
+1. Nearby Transfer is intended for file transfers between devices on the same local network. Files are transferred only between devices selected by the user.
+2. You must have the legal right to transfer your files. You must not use this software to transfer unlawful, infringing, or harmful content.
+3. You are responsible for the files you choose to transfer. The software does not guarantee the availability of your local network, system firewall, or third-party security software.
+4. The software does not intentionally upload files to third-party cloud services. Your network environment may still be affected by system, router, and firewall policies.
+5. By continuing the installation or using the software, you agree to these terms. Cancel the installation if you do not agree.
+
+Product: Nearby Transfer (邻传)

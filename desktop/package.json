@@ -1,8 +1,8 @@
 {
   "name": "lan-transfer-desktop",
-  "version": "1.0.3",
+  "version": "1.0.8",
   "private": true,
-  "description": "邻传 Nearby Transfer · Windows 电脑端 (LTP/1)",
+  "description": "邻传 Nearby Transfer · 局域网跨设备文件互传工具",
   "author": "齐世有 <blacklaw@foxmail.com>",
   "homepage": "https://linchuan.aeback.com",
   "main": "src/main/main.js",
@@ -11,10 +11,11 @@
     "dev": "cross-env LTP_DEV=1 electron .",
     "gen:icons": "python ../scripts/gen-icons.py",
     "gen:fonts": "python ../scripts/gen-fonts.py",
-    "test:protocol": "node scripts/test-protocol.js",
-    "test:e2e": "node scripts/test-e2e.js",
-    "test": "node scripts/test-protocol.js && node scripts/test-e2e.js",
-    "build": "electron-builder --win --x64"
+    "test:protocol": "node ../scripts/test-protocol.js",
+    "test:e2e": "node ../scripts/test-e2e.js",
+    "test": "node ../scripts/test-protocol.js && node ../scripts/test-e2e.js",
+    "build": "electron-builder --win nsis --x64",
+    "build:store": "electron-builder --win msix --x64"
   },
   "dependencies": {
     "qrcode": "^1.5.4"
@@ -22,12 +23,14 @@
   "devDependencies": {
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "27.0.0-alpha.9"
   },
   "build": {
     "appId": "com.lantransfer.desktop",
     "productName": "邻传",
+    "copyright": "Copyright © 2026 齐世有",
     "directories": {
+      "buildResources": "resources",
       "output": "release"
     },
     "files": [
@@ -50,22 +53,45 @@
     ],
     "win": {
       "icon": "resources/icon.ico",
+      "legalTrademarks": "邻传、Nearby Transfer 为齐世有所有",
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
+    },
+    "msix": {
+      "identityName": "46CE527F.8840C56609D6",
+      "applicationId": "NearbyTransfer",
+      "publisher": "CN=95F923A1-AAA6-4D57-A381-A08EABD5CE8D",
+      "publisherDisplayName": "北京科技不有限责任公司",
+      "displayName": "邻传",
+      "languages": [
+        "zh-CN",
+        "en-US"
+      ],
+      "capabilities": [
+        "privateNetworkClientServer"
+      ],
+      "createMsixupload": true,
+      "artifactName": "Nearby-Transfer-Store-${version}.${ext}",
+      "minVersion": "10.0.17763.0",
+      "maxVersionTested": "10.0.26100.0"
     },
     "nsis": {
       "artifactName": "Nearby-Transfer-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "language": 2052,
-      "installerLanguages": ["zh_CN", "en_US"],
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "displayLanguageSelector": true,
       "include": "resources/installer.nsh",
-      "license": "resources/license.txt",
       "installerHeader": "resources/installer-header.bmp",
       "installerSidebar": "resources/installer-sidebar.bmp",
       "uninstallerSidebar": "resources/installer-sidebar.bmp",

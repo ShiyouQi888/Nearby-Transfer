@@ -12,6 +12,29 @@
     '进行中': 'In progress', '实时进度、速度与剩余时间。': 'Live progress, speed and remaining time.', '当前没有进行中的传输。': 'No transfers in progress.', '接收文件': 'Receive files', '手机或其他设备发送到电脑的文件会在这里确认和查看。': 'Files sent to this computer appear here for confirmation and viewing.', '打开接收目录': 'Open receive folder', '暂无接收记录。收到文件时会弹出确认窗口。': 'No received files. A confirmation dialog will appear for new files.', '传输历史': 'Transfer history', '查看、定位或删除历史传输记录。': 'View, locate or delete transfer records.', '清空历史': 'Clear history', '打开保存目录': 'Open save folder', '暂无传输记录。': 'No transfer history.', '最近配对过的设备，可快捷发送；删除后需要重新配对。': 'Recently paired devices for quick sending. Removing one requires pairing again.', '还没有历史设备。': 'No trusted devices yet.',
     '可从 GitHub Releases 检查新版本': 'Check GitHub Releases for updates', '检查更新': 'Check for updates', '下载新版': 'Download update', '联系我们': 'Contact us', '使用中遇到问题，或想提建议，欢迎随时联系。': 'Questions or suggestions? Get in touch.', '作者': 'Author', '电子邮箱': 'Email', '官方网站': 'Official website', '点击邮箱或官网可直接唤起系统应用。': 'Click an email or website link to open it.', '版权信息': 'Copyright', '版权': 'Copyright', '界面字体：思源黑体（SIL Open Font License 1.1）': 'Interface font: Source Han Sans (SIL Open Font License 1.1)', '开源许可与运行环境。': 'License and runtime', '收到文件': 'Incoming files', '来自未知设备': 'From unknown device', '拒绝': 'Reject', '接收': 'Accept', '常规': 'General', '本机身份、接收目录与软件信息': 'Device identity, receive folder and app information', '设备名称': 'Device name', '接收文件保存目录': 'Receive folder', '更改…': 'Change…', '协议信息': 'Protocol', '局域网权限': 'LAN access', '正在检测防火墙权限…': 'Checking firewall access…', '自动配置': 'Configure automatically', '仅允许专用/域网络访问邻传端口 53317，不开放公网。': 'Allow port 53317 only on private/domain networks; never expose it publicly.', '关闭': 'Close', '保存': 'Save', '语言': 'Language', '简体中文': 'Simplified Chinese', 'English': 'English', '选择语言': 'Choose language', '连接与设备': 'Connection & devices', '传输中心': 'Transfer center', '记录与管理': 'Records & management', '软件': 'Software', '局域网高速互传': 'Fast LAN transfer', '网络扫描雷达': 'Network scan radar', '扫描待命': 'Scan ready', '正在扫描': 'Scanning', '正在并发探测…': 'Probing devices…', '扫描失败': 'Scan failed', '扫描完成：探测': 'Scan complete: probed', '个地址，发现在线设备': 'addresses, found', '台': 'device(s)', '已添加': 'Added', '项到发送队列': 'item(s) to the send queue', '已生成新的 6 位匹配码': 'New 6-digit pairing code generated', '本机 IP 已复制：': 'Local IP copied: ', '暂无可复制的本机 IP': 'No local IP to copy', '已生成新二维码': 'New QR code generated', '服务未启动': 'Service is not running', '选择发送目标': 'Choose a destination', '独立发送页面': 'Standalone send page', '拖入文件即可加入队列，选择目标设备后发送。': 'Drop files into the queue, choose a destination, then send.', '位匹配码': '6-digit pairing code', '含 IP、端口与临时令牌': 'Includes IP, port and temporary token', '有效期': 'Valid for', '分钟 · 令牌': 'minutes · token', '该匹配码已过期，请重新生成': 'This pairing code has expired. Generate a new one.', '剩余有效时间': 'Time remaining', '协议': 'Protocol', '版本': 'Version', '运行环境': 'Runtime', '系统': 'System', '局域网地址': 'LAN address', '设备 ID': 'Device ID', '设备指纹': 'Device fingerprint', '监听端口': 'Listening port', '启动时自动配置；如被系统拦截，请点击“自动配置”并允许管理员权限。': 'Configured at startup. If Windows blocks it, click “Configure automatically” and allow administrator access.', '正在请求 Windows 管理员权限…': 'Requesting Windows administrator permission…', '已允许局域网访问端口 53317': 'LAN access on port 53317 is allowed', '未完成配置，请在 Windows UAC 中允许操作后重试。': 'Configuration incomplete. Allow the Windows UAC request and try again.', '邻传 Nearby Transfer · 保留所有权利。': 'Nearby Transfer · All rights reserved.', '局域网文件互传 · 无需联网 · 数据不出内网': 'LAN file transfer · No internet required · Data stays local', '邻传是一款面向局域网的跨设备文件互传工具。所有文件仅在同一 Wi-Fi 下点对点直传，': 'Nearby Transfer sends files directly between devices on the same Wi-Fi network.', '不经过任何第三方服务器，也不上传云端；未配对的设备一律拒绝连接。': 'No third-party servers or cloud uploads; unpaired devices are always rejected.', '联系方式': 'Contact', '版权与运行环境': 'Copyright & runtime', '邻传': 'Nearby Transfer'
   };
+  dict['更新由 Microsoft Store 管理'] = 'Updates are managed by the Microsoft Store';
+  Object.assign(dict, {
+    '手机端下载': 'Download for Android',
+    'Android 应用下载二维码': 'QR code to download the Android app',
+    'Android · Nearby Transfer': 'Android · Nearby Transfer',
+    '在 Android 手机上安装邻传，通过局域网与电脑直接互传文件。': 'Install Nearby Transfer on your Android phone and transfer files directly with your PC over the local network.',
+    '正在获取下载信息…': 'Loading download information…',
+    '查看全部 Releases': 'View all releases',
+    '正在连接 GitHub Releases…': 'Connecting to GitHub Releases…',
+    '扫码下载 Android 版': 'Scan to get the Android app',
+    '使用手机相机或浏览器扫码': 'Scan with your phone camera or browser',
+    '同一局域网直连': 'Direct transfer over your local network',
+    '手机和电脑连接到同一 Wi-Fi 后即可配对与传输。': 'Connect your phone and PC to the same Wi-Fi to pair and transfer files.',
+    '从官方 Releases 获取': 'Get it from official Releases',
+    '安装包由项目 GitHub Releases 提供；请仅安装来自官方发布页的版本。': 'The installer is provided by the project’s GitHub Releases. Only install versions from the official release page.',
+    '最新版本': 'Latest version',
+    '来源：GitHub Releases': 'Source: GitHub Releases',
+    '暂未找到 APK 安装包，请打开 Releases 查看。': 'No APK installer was found. Open Releases to check.',
+    '下载 Android APK': 'Download Android APK',
+    '打开 GitHub Releases': 'Open GitHub Releases',
+    '重试获取': 'Retry',
+    '暂时无法获取下载信息，请稍后重试或查看 Releases。': 'Download information is unavailable. Try again later or view Releases.'
+  });
   const replacements = Object.keys(dict).sort((a, b) => b.length - a.length);
   const state = { lang: localStorage.getItem('ltp.language') || 'zh-CN' };
   function t(value) {
@@ -26,7 +49,7 @@
     const nodes = []; let node;
     while ((node = walker.nextNode())) if (node.parentElement && !['SCRIPT', 'STYLE'].includes(node.parentElement.tagName)) nodes.push(node);
     nodes.forEach((n) => { const next = t(n.nodeValue); if (next !== n.nodeValue) n.nodeValue = next; });
-    root.querySelectorAll('[placeholder],[title],[aria-label]').forEach((el) => ['placeholder', 'title', 'aria-label'].forEach((attr) => { if (el.hasAttribute(attr)) el.setAttribute(attr, t(el.getAttribute(attr))); }));
+    root.querySelectorAll('[placeholder],[title],[aria-label],[alt]').forEach((el) => ['placeholder', 'title', 'aria-label', 'alt'].forEach((attr) => { if (el.hasAttribute(attr)) el.setAttribute(attr, t(el.getAttribute(attr))); }));
   }
   function setLanguage(lang) { state.lang = lang === 'en-US' ? 'en-US' : 'zh-CN'; localStorage.setItem('ltp.language', state.lang); location.reload(); }
   window.LTP_I18N = { t, apply, setLanguage, getLanguage: () => state.lang };

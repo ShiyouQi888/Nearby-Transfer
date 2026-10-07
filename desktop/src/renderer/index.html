@@ -50,6 +50,7 @@
       <button class="nav-item" data-tab="history"><span class="ni" data-icon="history"></span>历史</button>
       <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span>历史设备</button>
       <div class="nav-label">软件</div>
+      <button class="nav-item" data-tab="mobile-download"><span class="ni" data-icon="download"></span>手机端下载</button>
       <button class="nav-item" data-tab="about"><span class="ni" data-icon="info"></span>关于</button>
 
       <div class="side-foot">
@@ -317,6 +318,31 @@
             <ul class="devlist" id="trustedList"></ul>
             <div class="empty" id="trustedEmpty">还没有历史设备。</div>
           </div>
+        </div>
+      </section>
+
+      <!-- 手机端下载 -->
+      <section class="tab" id="tab-mobile-download">
+        <div class="download-hero">
+          <div class="download-copy">
+            <span class="download-eyebrow"><span class="download-live-dot"></span>Android · Nearby Transfer</span>
+            <h2>手机端下载</h2>
+            <p>在 Android 手机上安装邻传，通过局域网与电脑直接互传文件。</p>
+            <div class="download-actions">
+              <button class="btn primary" id="btnDownloadMobile" type="button" disabled><span class="bi" data-icon="download"></span><span id="mobileDownloadAction">正在获取下载信息…</span></button>
+              <button class="btn ghost" id="btnOpenReleases" type="button">查看全部 Releases</button>
+            </div>
+            <div class="download-meta" id="mobileDownloadMeta" aria-live="polite">正在连接 GitHub Releases…</div>
+          </div>
+          <div class="download-qr-card">
+            <div class="download-qr-frame"><img id="mobileDownloadQr" alt="Android 应用下载二维码" hidden /><div id="mobileQrPlaceholder" class="download-qr-placeholder"><span data-icon="qr"></span></div></div>
+            <strong>扫码下载 Android 版</strong>
+            <span>使用手机相机或浏览器扫码</span>
+          </div>
+        </div>
+        <div class="download-notes">
+          <article class="card download-note"><span class="ic-chip" data-icon="wifi"></span><div><h3>同一局域网直连</h3><p>手机和电脑连接到同一 Wi-Fi 后即可配对与传输。</p></div></article>
+          <article class="card download-note"><span class="ic-chip" data-icon="shield"></span><div><h3>从官方 Releases 获取</h3><p>安装包由项目 GitHub Releases 提供；请仅安装来自官方发布页的版本。</p></div></article>
         </div>
       </section>
 

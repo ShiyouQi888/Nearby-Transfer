@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">邻传</string>
+    <string name="app_description">邻传 Nearby Transfer：局域网跨设备文件互传工具。作者：齐世有</string>
     <string name="title_activity_main">邻传</string>
     <string name="package_name">com.lantransfer.mobile</string>
     <string name="custom_url_scheme">com.lantransfer.mobile</string>

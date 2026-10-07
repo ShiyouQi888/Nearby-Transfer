@@ -7,8 +7,8 @@ android {
         applicationId "com.lantransfer.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "1.0.3"
+        versionCode 7
+        versionName "1.0.7"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -22,6 +22,29 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+// The private release key and its password live outside the repository. This
+// per-machine file is gitignored and is created only on the signing workstation.
+def localSigningConfig = rootProject.file('signing.local.properties')
+if (localSigningConfig.exists()) {
+    def signingProperties = new Properties()
+    localSigningConfig.withInputStream { signingProperties.load(it) }
+    def signingPasswordFile = file(signingProperties.getProperty('storePasswordFile'))
+    if (!signingPasswordFile.isFile()) {
+        throw new GradleException("Android signing password file is missing: ${signingPasswordFile}")
+    }
+    def signingPassword = signingPasswordFile.getText('UTF-8').trim()
+    android.signingConfigs {
+        release {
+            storeFile file(signingProperties.getProperty('storeFile'))
+            storeType 'PKCS12'
+            storePassword signingPassword
+            keyAlias signingProperties.getProperty('keyAlias')
+            keyPassword signingPassword
+        }
+    }
+    android.buildTypes.release.signingConfig android.signingConfigs.release
 }
 
 configurations.configureEach {

@@ -151,6 +151,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     if (tab === 'history') renderHistory();
     if (tab === 'received') renderReceived();
     if (tab === 'about') renderAbout();
+    if (tab === 'mobile-download') renderMobileDownload();
   });
 });
 
@@ -503,7 +504,8 @@ async function refreshQr() {
   if (!q) { $('qrMeta').textContent = '服务未启动'; return; }
   S.qrPayload = q.payload;
   drawQr(q);
-  $('qrMeta').innerHTML = `含 IP、端口与临时令牌<br>有效期 ${Math.round(q.ttlMs / 60000)} 分钟 · 令牌 <code>${esc(q.token)}</code>`;
+  const t = window.LTP_I18N?.t || ((value) => value);
+  $('qrMeta').innerHTML = `${t('含 IP、端口与临时令牌')}<br>${t('有效期')} ${Math.round(q.ttlMs / 60000)} ${t('分钟 · 令牌')} <code>${esc(q.token)}</code>`;
 }
 
 function drawQr(q) {
@@ -748,6 +750,14 @@ async function renderAbout() {
   }
   const info = APP_INFO || {};
 
+  if (info.storeManagedUpdates) {
+    const t = window.LTP_I18N?.t || ((value) => value);
+    const status = $('updateStatus');
+    const check = $('btnCheckUpdate');
+    if (status) status.textContent = t('更新由 Microsoft Store 管理');
+    if (check) check.hidden = true;
+  }
+
   if ($('aboutVersion')) $('aboutVersion').textContent = info.version || '1.0.0';
   if ($('aboutProtocol')) $('aboutProtocol').textContent = info.protocol || 'LTP/1';
 
@@ -775,6 +785,11 @@ async function checkForUpdates() {
   try {
     const r = await api.checkForUpdates();
     if (!r || !r.ok) throw new Error((r && r.error) || '检查更新失败');
+    if (r.storeManaged) {
+      status.textContent = (window.LTP_I18N?.t || ((value) => value))('更新由 Microsoft Store 管理');
+      check.hidden = true;
+      return;
+    }
     UPDATE_INFO = r;
     if (r.updateAvailable) {
       status.textContent = `发现新版本 v${r.latestVersion}`;
@@ -786,6 +801,48 @@ async function checkForUpdates() {
 }
 
 if ($('btnCheckUpdate')) $('btnCheckUpdate').addEventListener('click', checkForUpdates);
+
+let MOBILE_DOWNLOAD_INFO = null;
+async function renderMobileDownload() {
+  const meta = $('mobileDownloadMeta');
+  const actionLabel = $('mobileDownloadAction');
+  const downloadBtn = $('btnDownloadMobile');
+  const qr = $('mobileDownloadQr');
+  const placeholder = $('mobileQrPlaceholder');
+  const releasesBtn = $('btnOpenReleases');
+  const t = window.LTP_I18N?.t || ((value) => value);
+  if (!meta || !actionLabel || !downloadBtn) return;
+  if (MOBILE_DOWNLOAD_INFO) {
+    showMobileDownloadInfo(MOBILE_DOWNLOAD_INFO, { meta, actionLabel, downloadBtn, qr, placeholder, releasesBtn, t });
+    return;
+  }
+  meta.textContent = t('正在连接 GitHub Releases…');
+  try {
+    const info = await api.getMobileDownloadInfo();
+    if (!info || !info.ok) throw new Error(info?.error || 'download_info_unavailable');
+    MOBILE_DOWNLOAD_INFO = info;
+    showMobileDownloadInfo(info, { meta, actionLabel, downloadBtn, qr, placeholder, releasesBtn, t });
+  } catch (_) {
+    meta.textContent = t('暂时无法获取下载信息，请稍后重试或查看 Releases。');
+    actionLabel.textContent = t('重试获取');
+    downloadBtn.disabled = false;
+    downloadBtn.onclick = () => { MOBILE_DOWNLOAD_INFO = null; renderMobileDownload(); };
+    if (releasesBtn) releasesBtn.onclick = () => api.openExternal('https://github.com/ShiyouQi888/Nearby-Transfer/releases');
+  }
+}
+
+function showMobileDownloadInfo(info, els) {
+  const { meta, actionLabel, downloadBtn, qr, placeholder, releasesBtn, t } = els;
+  const target = info.apkAvailable ? info.apkUrl : info.releaseUrl;
+  meta.textContent = info.apkAvailable
+    ? `${t('最新版本')} v${info.latestVersion || '—'}${info.apkSize ? ` · ${fmt.bytes(info.apkSize)}` : ''} · ${t('来源：GitHub Releases')}`
+    : `${t('暂未找到 APK 安装包，请打开 Releases 查看。')} · ${t('来源：GitHub Releases')}`;
+  actionLabel.textContent = t(info.apkAvailable ? '下载 Android APK' : '打开 GitHub Releases');
+  downloadBtn.disabled = false;
+  downloadBtn.onclick = () => api.openExternal(target);
+  if (releasesBtn) releasesBtn.onclick = () => api.openExternal(info.releaseUrl);
+  if (qr && info.qrDataUrl) { qr.src = info.qrDataUrl; qr.hidden = false; if (placeholder) placeholder.hidden = true; }
+}
 
 /** 联系方式的点击行为：邮箱唤起邮件客户端，官网唤起浏览器；失败则复制到剪贴板。 */
 function bindContactRows() {

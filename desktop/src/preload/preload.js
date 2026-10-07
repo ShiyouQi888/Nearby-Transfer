@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('ltp', {
   // ── 关于页
   getAppInfo: () => invoke('ltp:getAppInfo'),
   checkForUpdates: () => invoke('ltp:checkForUpdates'),
+  getMobileDownloadInfo: () => invoke('ltp:getMobileDownloadInfo'),
   openExternal: (url) => invoke('ltp:openExternal', url),
 
   // ── 查询

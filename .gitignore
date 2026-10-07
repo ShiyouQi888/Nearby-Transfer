@@ -51,6 +51,7 @@ Thumbs.db
 *.p12
 *.pfx
 google-services.json
+/mobile/android/signing.local.properties
 
 # node:sqlite 本地数据库
 *.db

@@ -84,11 +84,12 @@ function checkGithubRelease() {
           const data = JSON.parse(body);
           const version = String(data.tag_name || '').replace(/^v/i, '');
           const assets = Array.isArray(data.assets) ? data.assets : [];
+          const apkAsset = assets.find((a) => /Nearby-Transfer-.*\.apk$/i.test(a.name));
           resolve({
             currentVersion: appVersion(), latestVersion: version, updateAvailable: compareVersions(version, appVersion()) > 0,
             releaseUrl: data.html_url || 'https://github.com/ShiyouQi888/Nearby-Transfer/releases',
             desktopUrl: (assets.find((a) => /Nearby-Transfer-Setup-.*\.exe$/i.test(a.name)) || {}).browser_download_url || data.html_url,
-            apkUrl: (assets.find((a) => /Nearby-Transfer-.*\.apk$/i.test(a.name)) || {}).browser_download_url || data.html_url,
+            apkUrl: apkAsset?.browser_download_url || '', apkAvailable: !!apkAsset, apkSize: apkAsset?.size || 0,
             publishedAt: data.published_at || '',
           });
         } catch (e) { reject(e); }
@@ -193,6 +194,9 @@ async function firewallRuleExists(name) {
  */
 async function ensureFirewallRules() {
   if (process.platform !== 'win32') return { ok: true, changed: false, reason: 'not_windows' };
+  // Store/MSIX 包通过 privateNetworkClientServer capability 获得局域网防火墙访问，
+  // 不应尝试以 UAC 修改系统级规则。
+  if (process.windowsStore) return { ok: true, changed: false, status: 'package_capability' };
   const missing = [];
   for (const rule of FIREWALL_RULES) {
     if (!(await firewallRuleExists(rule.name))) missing.push(rule);
@@ -422,11 +426,27 @@ function registerIpc() {
     node: process.versions.node,
     platform: `${os.type()} ${os.release()}`,
     arch: process.arch,
+    storeManagedUpdates: !!process.windowsStore,
     protocol: P.PROTOCOL_ID,
   }));
   ipcMain.handle('ltp:checkForUpdates', async () => {
+    if (process.windowsStore) return { ok: true, storeManaged: true };
     try { return { ok: true, ...(await checkGithubRelease()) }; }
     catch (e) { return { ok: false, error: e && e.message ? e.message : '检查更新失败' }; }
+  });
+  ipcMain.handle('ltp:getMobileDownloadInfo', async () => {
+    try {
+      const release = await checkGithubRelease();
+      const target = release.apkUrl || release.releaseUrl;
+      let qrDataUrl = null;
+      try {
+        const QRCode = require('qrcode');
+        qrDataUrl = await QRCode.toDataURL(target, { width: 360, margin: 1, errorCorrectionLevel: 'M', color: { dark: '#101612', light: '#ffffff' } });
+      } catch (_) {}
+      return { ok: true, latestVersion: release.latestVersion, apkAvailable: release.apkAvailable, apkUrl: release.apkUrl, apkSize: release.apkSize, releaseUrl: release.releaseUrl, qrDataUrl };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'download_info_unavailable' };
+    }
   });
 
   // 只允许 http/https/mailto，避免渲染层被注入后调用 shell 打开任意协议

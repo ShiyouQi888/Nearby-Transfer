@@ -5,11 +5,13 @@
 
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 
 contextBridge.exposeInMainWorld('ltp', {
+  // Electron 32+ removed File.path; resolve OS-dropped File objects in preload.
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   // ── 窗口控制（自绘标题栏）
   winMinimize: () => invoke('ltp:winMinimize'),
   winFocus: () => invoke('ltp:winFocus'),

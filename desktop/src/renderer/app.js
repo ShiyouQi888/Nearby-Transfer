@@ -128,11 +128,52 @@ function toast(msg, kind) {
   setTimeout(() => el.remove(), 2600);
 }
 
-function notify(title, body) {
+let alertAudioContext = null;
+function unlockAlertAudio() {
   try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!alertAudioContext) alertAudioContext = new AudioContextClass();
+    if (alertAudioContext.state === 'suspended') alertAudioContext.resume().catch(() => {});
+  } catch (_) {}
+}
+window.addEventListener('pointerdown', unlockAlertAudio, { once: true, capture: true });
+window.addEventListener('keydown', unlockAlertAudio, { once: true, capture: true });
+
+function playAlertSound(kind = 'message') {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!alertAudioContext) unlockAlertAudio();
+    if (!alertAudioContext) return;
+    if (alertAudioContext.state === 'suspended') alertAudioContext.resume().catch(() => {});
+    if (alertAudioContext.state !== 'running') return;
+    const patterns = { message: [740, 940], file: [560, 760], complete: [784, 1047], failure: [440, 330] };
+    const context = alertAudioContext;
+    (patterns[kind] || patterns.message).forEach((frequency, index) => {
+      const start = context.currentTime + index * 0.13;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.035, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.095);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.1);
+    });
+  } catch (_) {}
+}
+
+function notify(title, body, sound = '') {
+  try {
+    const foreground = document.visibilityState === 'visible';
+    if (foreground && sound) playAlertSound(sound);
     if ('Notification' in window && Notification.permission === 'granted') {
       const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
-      const notification = new Notification(window.LTP_I18N ? window.LTP_I18N.t(title) : title, { body: window.LTP_I18N ? window.LTP_I18N.t(body) : body, silent: false, icon: 'logo.png', dir: 'auto', lang: isEnglish ? 'en' : 'zh-CN' });
+      const notification = new Notification(window.LTP_I18N ? window.LTP_I18N.t(title) : title, { body: window.LTP_I18N ? window.LTP_I18N.t(body) : body, silent: foreground, icon: 'logo.png', dir: 'auto', lang: isEnglish ? 'en' : 'zh-CN' });
       notification.onclick = () => { api.winFocus(); window.focus(); };
     }
     else if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
@@ -299,11 +340,30 @@ function addDroppedPaths(paths) {
   toast(`已添加 ${fresh.length} 项到发送队列`, 'ok');
 }
 
+function droppedFilePaths(dataTransfer) {
+  return [...(dataTransfer && dataTransfer.files ? dataTransfer.files : [])]
+    .map((file) => {
+      try {
+        return api.getPathForFile ? api.getPathForFile(file) : file.path;
+      } catch (_) {
+        return '';
+      }
+    })
+    .filter(Boolean);
+}
+
 const dropzone = $('sendDropzone');
 if (dropzone) {
   ['dragenter', 'dragover'].forEach((eventName) => dropzone.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('is-dragging'); }));
   ['dragleave', 'drop'].forEach((eventName) => dropzone.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('is-dragging'); }));
-  dropzone.addEventListener('drop', (e) => addDroppedPaths([...e.dataTransfer.files].map((file) => file.path).filter(Boolean)));
+  dropzone.addEventListener('drop', (e) => {
+    const paths = droppedFilePaths(e.dataTransfer);
+    if (!paths.length && e.dataTransfer?.files?.length) {
+      toast('读取拖入文件失败，请重试或点击此区域选择文件', 'err');
+      return;
+    }
+    addDroppedPaths(paths);
+  });
   const chooseFromDropzone = async () => addDroppedPaths(await api.pickFiles());
   dropzone.addEventListener('click', chooseFromDropzone);
   dropzone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chooseFromDropzone(); } });
@@ -913,7 +973,7 @@ function showOffer(offer) {
   $('offerModal').hidden = false;
   renderReceived();
   const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
-  notify(isEnglish ? 'Incoming files' : '收到文件', isEnglish ? `${devName} wants to send ${offer.files.length} file(s)` : `${devName} 请求发送 ${offer.files.length} 个文件`);
+  notify(isEnglish ? 'Incoming files' : '收到文件', isEnglish ? `${devName} wants to send ${offer.files.length} file(s)` : `${devName} 请求发送 ${offer.files.length} 个文件`, 'file');
 }
 
 function renderReceived() {
@@ -1293,7 +1353,11 @@ if ($('chatInput')) {
       e.preventDefault(); e.stopPropagation(); main.classList.remove('is-dragging');
     }));
     main.addEventListener('drop', (e) => {
-      const paths = [...(e.dataTransfer.files || [])].map((f) => f.path).filter(Boolean);
+      const paths = droppedFilePaths(e.dataTransfer);
+      if (!paths.length && e.dataTransfer?.files?.length) {
+        toast('读取拖入文件失败，请重试或使用附件按钮选择文件', 'err');
+        return;
+      }
       if (paths.length) sendChatFiles(paths);
     });
   }
@@ -1432,6 +1496,7 @@ async function handleEvent(ev, payload) {
       const peerId = payload.peerId;
       upsertChatMessage(peerId, payload.message);
       if (payload.message.dir === 'in') {
+        playAlertSound('message');
         goto('chat');
         await loadChats();
         await openChat(peerId);
@@ -1469,7 +1534,7 @@ async function handleEvent(ev, payload) {
         if (ev === 'transfer:complete' && t.status === 'done') {
           toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
           const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
-          notify(isEnglish ? 'Transfer complete' : '传输完成', isEnglish ? `${t.direction === 'send' ? 'Sent' : 'Received'} ${t.files.length} file(s)` : `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
+          notify(isEnglish ? 'Transfer complete' : '传输完成', isEnglish ? `${t.direction === 'send' ? 'Sent' : 'Received'} ${t.files.length} file(s)` : `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`, 'complete');
           if (t.direction === 'receive') {
             (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', path: f.path || '', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
             renderReceived();
@@ -1485,6 +1550,7 @@ async function handleEvent(ev, payload) {
       break;
     }
     case 'transfer:error':
+      playAlertSound('failure');
       toast('传输错误：' + (payload.message || ''), 'err');
       break;
     case 'trust:changed':

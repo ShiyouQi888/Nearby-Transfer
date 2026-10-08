@@ -29,6 +29,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.graphics.Typeface;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.OnBackPressedCallback;
@@ -91,6 +93,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private Button languageButton;
     private boolean english;
     private boolean sendInProgress;
+    private long lastAlertToneAt;
     private TextView receiveText;
     private LinearLayout receiveActions;
     private FrameLayout incomingOverlay;
@@ -905,14 +908,28 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     @Override public void onSendFailed(List<Uri> files, String error) { runOnUiThread(() -> { for (Uri uri : files) if (!pendingUris.contains(uri)) pendingUris.add(uri); sendInProgress = false; updatePendingText(); updateSendButtonState(); }); }
     @Override public void onSendRejected(List<Uri> files) { runOnUiThread(() -> { sendInProgress = false; updatePendingText(); updateSendButtonState(); }); }
     @Override public void onTransferFinished(boolean incoming, String label, boolean success) {
+        if (success) playAlertTone(ToneGenerator.TONE_PROP_ACK);
         if (!incoming) runOnUiThread(() -> { sendInProgress = false; updateSendButtonState(); });
         else runOnUiThread(this::renderChat);
         recordTransfer(incoming, label, success);
     }    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); }); }
-    @Override public void onIncomingOffer(String label, String deviceName, String ip) { runOnUiThread(() -> { status.setText(english ? "Waiting for confirmation" : "等待接收确认"); receiveText.setText(english ? "From: " + deviceName + " · " + ip + "\nFiles: " + label : "来源：" + deviceName + " · " + ip + "\n文件：" + label); showIncomingOverlay(label, deviceName, ip); toast(english ? "Incoming files · review and accept or decline" : "收到文件，请确认接收或拒绝"); showIncomingNotification(label, deviceName, ip); }); }
+    @Override public void onIncomingOffer(String label, String deviceName, String ip) { runOnUiThread(() -> { playAlertTone(ToneGenerator.TONE_PROP_PROMPT); status.setText(english ? "Waiting for confirmation" : "等待接收确认"); receiveText.setText(english ? "From: " + deviceName + " · " + ip + "\nFiles: " + label : "来源：" + deviceName + " · " + ip + "\n文件：" + label); showIncomingOverlay(label, deviceName, ip); toast(english ? "Incoming files · review and accept or decline" : "收到文件，请确认接收或拒绝"); showIncomingNotification(label, deviceName, ip); }); }
 
-    private void createNotificationChannel() { if (Build.VERSION.SDK_INT >= 26) { NotificationChannel c = new NotificationChannel("transfer", english ? "File transfers" : "文件传输", NotificationManager.IMPORTANCE_DEFAULT); getSystemService(NotificationManager.class).createNotificationChannel(c); } }
-    private void showIncomingNotification(String label, String deviceName, String ip) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) return; int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0); Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent openAction = PendingIntent.getActivity(this, 77, open, flags); Intent accept = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.ACCEPT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); Intent reject = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.REJECT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent acceptAction = PendingIntent.getActivity(this, 78, accept, flags); PendingIntent rejectAction = PendingIntent.getActivity(this, 79, reject, flags); android.app.Notification.Builder notification = new android.app.Notification.Builder(this, "transfer").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle(english ? "Incoming files · Nearby Transfer" : "邻传收到文件").setContentText((english ? "From " : "来自 ") + deviceName + " · " + ip + " · " + label).setContentIntent(openAction).setAutoCancel(true).addAction(0, english ? "Decline" : "拒绝", rejectAction).addAction(0, english ? "Accept" : "接收", acceptAction); NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, notification.build()); }
+    private void playAlertTone(int tone) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - lastAlertToneAt < 700) return;
+        lastAlertToneAt = now;
+        try {
+            ToneGenerator generator = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 65);
+            generator.startTone(tone, 140);
+            new android.os.Handler(getMainLooper()).postDelayed(() -> {
+                try { generator.stopTone(); generator.release(); } catch (Exception ignored) { }
+            }, 350);
+        } catch (RuntimeException ignored) { }
+    }
+
+    private void createNotificationChannel() { if (Build.VERSION.SDK_INT >= 26) { NotificationChannel c = new NotificationChannel("transfer_alert", english ? "File transfers" : "文件传输", NotificationManager.IMPORTANCE_DEFAULT); c.setSound(null, null); getSystemService(NotificationManager.class).createNotificationChannel(c); } }
+    private void showIncomingNotification(String label, String deviceName, String ip) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) return; int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0); Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent openAction = PendingIntent.getActivity(this, 77, open, flags); Intent accept = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.ACCEPT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); Intent reject = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.REJECT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent acceptAction = PendingIntent.getActivity(this, 78, accept, flags); PendingIntent rejectAction = PendingIntent.getActivity(this, 79, reject, flags); android.app.Notification.Builder notification = new android.app.Notification.Builder(this, "transfer_alert").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle(english ? "Incoming files · Nearby Transfer" : "邻传收到文件").setContentText((english ? "From " : "来自 ") + deviceName + " · " + ip + " · " + label).setContentIntent(openAction).setAutoCancel(true).addAction(0, english ? "Decline" : "拒绝", rejectAction).addAction(0, english ? "Accept" : "接收", acceptAction); NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, notification.build()); }
 
     private void showNotificationPermissionDialog() {
         boolean granted = Build.VERSION.SDK_INT < 33 || checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED;
@@ -969,6 +986,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
                 if (transferId != null && !transferId.isEmpty()) record.put("transferId", transferId);
             } catch (Exception ignored) { }
             chatStore.append(peer, record);
+            playAlertTone(ToneGenerator.TONE_PROP_BEEP2);
             // 收到对端消息时直接进入聊天页，保持桌面端与手机端行为一致。
             showPage(2);
             toast(english ? "New chat message from the computer" : "收到电脑端的新消息");

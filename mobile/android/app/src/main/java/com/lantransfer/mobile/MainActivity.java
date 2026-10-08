@@ -3,6 +3,9 @@ package com.lantransfer.mobile;
 import android.content.Intent;
 import android.util.Base64;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -21,12 +24,14 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.graphics.Typeface;
 
 import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import com.journeyapps.barcodescanner.ScanContract;
 import com.journeyapps.barcodescanner.ScanOptions;
@@ -42,6 +47,7 @@ import java.util.UUID;
 /** Native Android entry point. This screen does not use WebView or Capacitor. */
 public class MainActivity extends AppCompatActivity implements NativeClient.Listener {
     private static final int PICK_FILES = 42;
+    private static final int PICK_CHAT_FILE = 43;
     private EditText ipInput, codeInput;
     private EditText deviceNameInput;
     private TextView status;
@@ -60,9 +66,25 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private LinearLayout transferHistoryList;
     private LinearLayout discoveredDevices;
     private LinearLayout pairedDevicesList;
-    private LinearLayout connectionSection, sendSection, settingsSection;
+    private LinearLayout connectionSection, sendSection, settingsSection, chatSection;
     private FrameLayout pageHost;
-    private Button navConnect, navSend, navSettings;
+    private LinearLayout bottomNav;
+    private OnBackPressedCallback chatBackCallback;
+    private int activePageIndex;
+    private Button navConnect, navSend, navSettings, navChat;
+    // ── 聊天 ──
+    private ChatStore chatStore;
+    private LinearLayout chatList;
+    private ScrollView chatScroll;
+    private TextView chatHint, chatEmpty, chatPeerName, chatConnectionLabel;
+    private View chatOnlineDot;
+    private EditText chatInput;
+    private Button chatSendButton;
+    /** 与当前对端已读位点（本地视角）。 */
+    private long chatReadUpTo = 0;
+    /** 聊天文件进度：transferId -> 对应的气泡 View，用于就地刷新进度。 */
+    private final java.util.Map<String, TextView> chatProgressViews = new java.util.HashMap<>();
+    private final java.util.Map<String, ProgressBar> chatProgressBars = new java.util.HashMap<>();
     private Button sendButton;
     private Button updateButton;
     private TextView updateStatus;
@@ -73,6 +95,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private LinearLayout receiveActions;
     private FrameLayout incomingOverlay;
     private TextView incomingOverlayText;
+    private TextView incomingDeviceText, incomingIpText;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -83,6 +106,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             identity.edit().putString("device_id", deviceId).apply();
         }
         english = getPreferences(MODE_PRIVATE).getBoolean("english", false);
+        chatStore = new ChatStore(this);
         if (!identity.contains("device_name")) identity.edit().putString("device_name", english ? "My phone" : "我的手机").apply();
         getWindow().setStatusBarColor(Color.rgb(15, 18, 16));
         createNotificationChannel();
@@ -91,6 +115,10 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         discovery.start();
         qrLauncher = registerForActivityResult(new ScanContract(), result -> { if (result.getContents() != null && !connectFromQr(result.getContents())) toast("二维码内容无法识别"); });
         buildUi();
+        chatBackCallback = new OnBackPressedCallback(false) {
+            @Override public void handleOnBackPressed() { showPage(0); }
+        };
+        getOnBackPressedDispatcher().addCallback(this, chatBackCallback);
     }
 
     private void buildUi() {
@@ -131,6 +159,63 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         Button acceptReceive = button("确认接收"); acceptReceive.setOnClickListener(v -> { if (client != null) client.acceptIncomingOffer(); hideIncomingOverlay(); receiveActions.setVisibility(View.GONE); receiveText.setText(english ? "Receive: receiving" : "接收区：正在接收"); });
         // 接收确认统一使用全局浮层，发送页不再重复显示一套确认按钮。
 
+        chatSection = new LinearLayout(this); chatSection.setOrientation(LinearLayout.VERTICAL);
+        chatSection.setPadding(dp(20), dp(4), dp(20), 0);
+        LinearLayout chatHeader = new LinearLayout(this); chatHeader.setOrientation(LinearLayout.HORIZONTAL); chatHeader.setGravity(Gravity.CENTER_VERTICAL);
+        Button chatBack = new Button(this); chatBack.setText("‹"); chatBack.setTextSize(30); chatBack.setAllCaps(false); chatBack.setTextColor(Color.WHITE); chatBack.setContentDescription(english ? "Back to pages" : "返回主页面"); chatBack.setPadding(0, 0, 0, dp(3)); chatBack.setBackgroundColor(Color.TRANSPARENT); chatBack.setOnClickListener(v -> showPage(0));
+        LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(dp(34), dp(48)); backParams.setMargins(dp(-8), 0, dp(4), 0); chatHeader.addView(chatBack, backParams);
+        View peerAvatar = new DeviceAvatar(false);
+        chatHeader.addView(peerAvatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        LinearLayout peerInfo = new LinearLayout(this); peerInfo.setOrientation(LinearLayout.VERTICAL); peerInfo.setPadding(dp(11), 0, 0, 0);
+        chatPeerName = text(english ? "Paired computer" : "已配对的电脑", 16, Color.WHITE); chatPeerName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        peerInfo.addView(chatPeerName, new LinearLayout.LayoutParams(-1, dp(24)));
+        LinearLayout connectionLine = new LinearLayout(this); connectionLine.setOrientation(LinearLayout.HORIZONTAL); connectionLine.setGravity(Gravity.CENTER_VERTICAL);
+        chatOnlineDot = new View(this); chatOnlineDot.setBackground(box(Color.rgb(0, 220, 130), Color.rgb(0, 220, 130), dp(6))); connectionLine.addView(chatOnlineDot, new LinearLayout.LayoutParams(dp(7), dp(7)));
+        chatConnectionLabel = text(english ? "Local network · private chat" : "局域网连接 · 私密对话", 11, Color.rgb(145, 163, 151));
+        LinearLayout.LayoutParams connectionLabelParams = new LinearLayout.LayoutParams(-2, dp(20)); connectionLabelParams.leftMargin = dp(6); connectionLine.addView(chatConnectionLabel, connectionLabelParams);
+        peerInfo.addView(connectionLine, new LinearLayout.LayoutParams(-1, dp(20)));
+        chatHeader.addView(peerInfo, new LinearLayout.LayoutParams(0, -2, 1));
+        chatSection.addView(chatHeader, new LinearLayout.LayoutParams(-1, dp(58)));
+
+        chatHint = text(english ? "Messages stay on your local network — no cloud relay." : "消息仅通过本地局域网传输，不经过云端。", 11, Color.rgb(127, 145, 134)); chatHint.setPadding(dp(55), 0, 0, dp(8)); chatSection.addView(chatHint, new LinearLayout.LayoutParams(-1, dp(30)));
+        View headerDivider = new View(this); headerDivider.setBackgroundColor(Color.rgb(38, 46, 41)); chatSection.addView(headerDivider, new LinearLayout.LayoutParams(-1, dp(1)));
+
+        FrameLayout timeline = new FrameLayout(this);
+        chatScroll = new ScrollView(this); chatScroll.setFillViewport(true); chatScroll.setClipToPadding(false); chatScroll.setVerticalScrollBarEnabled(false);
+        chatList = new LinearLayout(this); chatList.setOrientation(LinearLayout.VERTICAL); chatList.setPadding(0, dp(12), 0, dp(14));
+        chatScroll.addView(chatList, new ScrollView.LayoutParams(-1, -2));
+        timeline.addView(chatScroll, new FrameLayout.LayoutParams(-1, -1));
+        chatEmpty = text(english ? "No messages yet\nSend a message to start the conversation." : "还没有消息\n发送一条消息，开始你们的对话。", 13, Color.rgb(127, 145, 134)); chatEmpty.setGravity(Gravity.CENTER); chatEmpty.setTextAlignment(View.TEXT_ALIGNMENT_CENTER); chatEmpty.setLineSpacing(dp(6), 1f); chatEmpty.setPadding(dp(24), dp(24), dp(24), dp(24));
+        timeline.addView(chatEmpty, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams timelineParams = new LinearLayout.LayoutParams(-1, 0, 1); timelineParams.topMargin = dp(10); chatSection.addView(timeline, timelineParams);
+
+        LinearLayout composer = new LinearLayout(this); composer.setOrientation(LinearLayout.HORIZONTAL); composer.setGravity(Gravity.CENTER_VERTICAL); composer.setPadding(0, 0, 0, 0);
+        FrameLayout inputShell = new FrameLayout(this);
+        inputShell.setBackground(box(Color.rgb(25, 30, 27), Color.rgb(48, 56, 51), dp(24)));
+        chatInput = new EditText(this); chatInput.setHint(tr("输入消息…")); chatInput.setTextSize(15); chatInput.setTextColor(Color.WHITE); chatInput.setHintTextColor(Color.rgb(127,132,128));
+        chatInput.setBackgroundColor(Color.TRANSPARENT); chatInput.setPadding(dp(50), dp(6), dp(50), dp(6)); chatInput.setMinHeight(dp(50)); chatInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START); chatInput.setIncludeFontPadding(false);
+        chatInput.setMaxLines(4); chatInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        chatInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEND | android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+        inputShell.addView(chatInput, new FrameLayout.LayoutParams(-1, dp(52), Gravity.CENTER_VERTICAL));
+        Button chatAttach = new Button(this); chatAttach.setText("＋"); chatAttach.setTextSize(23); chatAttach.setAllCaps(false); chatAttach.setTextColor(Color.rgb(0, 225, 132)); chatAttach.setContentDescription(english ? "Attach a file" : "发送文件");
+        chatAttach.setMinWidth(0); chatAttach.setMinHeight(0); chatAttach.setPadding(0, 0, 0, dp(2)); chatAttach.setBackgroundColor(Color.TRANSPARENT); chatAttach.setOnClickListener(v -> pickChatFile());
+        FrameLayout.LayoutParams attachParams = new FrameLayout.LayoutParams(dp(42), dp(42), Gravity.START | Gravity.CENTER_VERTICAL); attachParams.leftMargin = dp(4); inputShell.addView(chatAttach, attachParams);
+        chatSendButton = new Button(this); chatSendButton.setText("➤"); chatSendButton.setTextSize(19); chatSendButton.setAllCaps(false); chatSendButton.setTextColor(Color.rgb(7, 26, 18)); chatSendButton.setContentDescription(english ? "Send message" : "发送消息");
+        chatSendButton.setMinWidth(0); chatSendButton.setMinHeight(0); chatSendButton.setPadding(0, 0, 0, 0);
+        chatSendButton.setBackground(box(Color.rgb(0, 205, 119), Color.rgb(0, 205, 119), dp(20))); chatSendButton.setEnabled(false); chatSendButton.setAlpha(0.45f); chatSendButton.setOnClickListener(v -> sendChatText());
+        FrameLayout.LayoutParams sendParams = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.END | Gravity.CENTER_VERTICAL); sendParams.rightMargin = dp(5); inputShell.addView(chatSendButton, sendParams);
+        composer.addView(inputShell, new LinearLayout.LayoutParams(-1, dp(52)));
+        chatSection.addView(composer, new LinearLayout.LayoutParams(-1, -2));
+        chatInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER && event.getAction() == android.view.KeyEvent.ACTION_DOWN && !event.isShiftPressed())) { sendChatText(); return true; }
+            return false;
+        });
+        chatInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable s) { if (chatSendButton != null) { boolean hasText = s.toString().trim().length() > 0; chatSendButton.setEnabled(hasText); chatSendButton.setAlpha(hasText ? 1f : 0.45f); } }
+        });
+
         settingsSection = new LinearLayout(this); settingsSection.setOrientation(LinearLayout.VERTICAL);
         TextView settingsTitle = text("设置", 22, Color.WHITE); settingsTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); settingsTitle.setPadding(0, dp(8), 0, 0); settingsSection.addView(settingsTitle, params(-1, 44));
         TextView settingsSubtitle = text(english ? "Personalize your device and manage the app" : "管理设备信息、应用版本与相关链接", 12, Color.rgb(127, 145, 134)); settingsSection.addView(settingsSubtitle, params(-1, 28));
@@ -148,6 +233,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         TextView networkCopy = text(english ? "Same Wi‑Fi required · Received files: Downloads / Nearby Transfer" : "手机与电脑需连接同一 Wi‑Fi · 接收文件保存至：下载 / 邻传", 12, Color.rgb(177, 187, 180)); networkCopy.setLineSpacing(dp(2), 1f); networkCard.addView(networkCopy, params(-1, -2));
         View networkDivider = new View(this); networkDivider.setBackgroundColor(Color.rgb(47, 57, 51)); LinearLayout.LayoutParams dividerParams = params(-1, 1); dividerParams.setMargins(0, dp(9), 0, dp(8)); networkCard.addView(networkDivider, dividerParams);
         TextView securityNotice = text(english ? "Not encrypted — use only on a trusted local network." : "当前传输未加密，请仅在可信的局域网中使用。", 12, Color.rgb(230, 185, 105)); networkCard.addView(securityNotice, params(-1, -2)); settingsSection.addView(networkCard, params(-1, -2));
+        Button notificationSettings = button(english ? "Set up notifications" : "设置接收通知"); notificationSettings.setTextSize(13); notificationSettings.setOnClickListener(v -> showNotificationPermissionDialog());
+        LinearLayout.LayoutParams notificationParams = new LinearLayout.LayoutParams(-1, dp(42)); notificationParams.topMargin = dp(8); settingsSection.addView(notificationSettings, notificationParams);
 
         TextView contactTitle = text(english ? "About" : "关于邻传", 14, Color.rgb(163, 185, 171)); contactTitle.setPadding(dp(2), dp(12), 0, 0); settingsSection.addView(contactTitle, params(-1, 34));
         String contactCopy = english ? "Nearby Transfer · Native Android\nBy Qi Shiyou · © 2026\nblacklaw@foxmail.com" : "邻传 Nearby Transfer · 原生 Android 应用\n作者：齐世有 · © 2026\nblacklaw@foxmail.com";
@@ -168,13 +255,16 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         // 语言切换位于右上角，设置页保持内容简洁。
 
         pageHost = new FrameLayout(this); pageHost.setBackgroundColor(Color.rgb(15, 18, 16));
-        pageHost.addView(page(connectionSection)); pageHost.addView(page(sendSection)); pageHost.addView(page(settingsSection));
+        pageHost.addView(page(connectionSection)); pageHost.addView(page(sendSection));
+        pageHost.addView(chatSection, new FrameLayout.LayoutParams(-1, -1)); pageHost.addView(page(settingsSection));
         root.addView(pageHost, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        LinearLayout nav = new LinearLayout(this); nav.setOrientation(LinearLayout.HORIZONTAL); nav.setGravity(Gravity.CENTER); nav.setPadding(dp(12), dp(6), dp(12), dp(8)); nav.setBackgroundColor(Color.rgb(20,24,22));
-        navConnect = navButton("连接"); navSend = navButton("发送"); navSettings = navButton("设置");
-        navConnect.setOnClickListener(v -> showPage(0)); navSend.setOnClickListener(v -> showPage(1)); navSettings.setOnClickListener(v -> showPage(2));
-        nav.addView(navConnect, new LinearLayout.LayoutParams(0, dp(52), 1)); nav.addView(navSend, new LinearLayout.LayoutParams(0, dp(52), 1)); nav.addView(navSettings, new LinearLayout.LayoutParams(0, dp(52), 1)); root.addView(nav, new LinearLayout.LayoutParams(-1, dp(68)));
+        bottomNav = new LinearLayout(this); bottomNav.setOrientation(LinearLayout.HORIZONTAL); bottomNav.setGravity(Gravity.CENTER); bottomNav.setPadding(dp(12), dp(6), dp(12), dp(8)); bottomNav.setBackgroundColor(Color.rgb(20,24,22));
+        navConnect = navButton("连接"); navSend = navButton("发送"); navChat = navButton("聊天"); navSettings = navButton("设置");
+        navConnect.setOnClickListener(v -> showPage(0)); navSend.setOnClickListener(v -> showPage(1));
+        navChat.setOnClickListener(v -> showPage(2)); navSettings.setOnClickListener(v -> showPage(3));
+        bottomNav.addView(navConnect, new LinearLayout.LayoutParams(0, dp(52), 1)); bottomNav.addView(navSend, new LinearLayout.LayoutParams(0, dp(52), 1));
+        bottomNav.addView(navChat, new LinearLayout.LayoutParams(0, dp(52), 1)); bottomNav.addView(navSettings, new LinearLayout.LayoutParams(0, dp(52), 1)); root.addView(bottomNav, new LinearLayout.LayoutParams(-1, dp(68)));
         FrameLayout shell = new FrameLayout(this); shell.setBackgroundColor(Color.rgb(15, 18, 16)); shell.addView(root, new FrameLayout.LayoutParams(-1, -1));
         incomingOverlay = buildIncomingOverlay(); incomingOverlay.setVisibility(View.GONE);
         FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP); overlayParams.setMargins(dp(16), dp(130), dp(16), 0); shell.addView(incomingOverlay, overlayParams);
@@ -210,9 +300,216 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
     private void showPage(int index) {
         if (pageHost == null) return;
+        activePageIndex = index;
+        if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
+        if (chatBackCallback != null) chatBackCallback.setEnabled(index == 2);
         for (int i = 0; i < pageHost.getChildCount(); i++) pageHost.getChildAt(i).setVisibility(i == index ? View.VISIBLE : View.GONE);
-        Button[] nav = { navConnect, navSend, navSettings };
+        Button[] nav = { navConnect, navSend, navChat, navSettings };
         for (int i = 0; i < nav.length; i++) if (nav[i] != null) { nav[i].setTextColor(i == index ? Color.rgb(0, 232, 135) : Color.rgb(163, 167, 164)); nav[i].setSelected(i == index); nav[i].setBackground(i == index ? box(Color.rgb(17, 45, 32), Color.rgb(23, 92, 60), dp(12)) : new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); }
+        // 进入聊天页时刷新一次，并把对端消息标记为已读。
+        if (index == 2) { renderChat(); }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 聊天（Chat over LTP/1）
+    // ─────────────────────────────────────────────────────────────
+
+    /** 当前聊天对端的稳定标识：优先用已配对设备的 deviceId，否则退回 IP。 */
+    private String chatPeerKey() {
+        String host = ipInput != null ? ipInput.getText().toString().trim() : "";
+        if (host.isEmpty()) host = getPreferences(MODE_PRIVATE).getString("last_host", "");
+        return host.isEmpty() ? "unknown" : "host-" + host;
+    }
+
+    /** 本地已读位点（每个对端独立）。 */
+    private long readPref(String peer) { return getPreferences(MODE_PRIVATE).getLong("chat_read_" + peer, 0); }
+    private void setReadPref(String peer, long ts) { getPreferences(MODE_PRIVATE).edit().putLong("chat_read_" + peer, ts).apply(); }
+
+    private void renderChat() {
+        if (chatList == null) return;
+        updateChatHeader();
+        String peer = chatPeerKey();
+        chatList.removeAllViews();
+        chatProgressViews.clear();
+        chatProgressBars.clear();
+        java.util.List<org.json.JSONObject> messages = chatStore.list(peer);
+        chatEmpty.setVisibility(messages.isEmpty() ? View.VISIBLE : View.GONE);
+        for (org.json.JSONObject message : messages) chatList.addView(chatBubble(message));
+        if (!messages.isEmpty() && chatScroll != null) chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
+        // 进入聊天页 = 已读：推进本地位点，并回执给对端。
+        long newest = chatStore.lastTs(peer);
+        if (newest > readPref(peer)) {
+            setReadPref(peer, newest);
+            if (client != null && client.isConnected()) client.sendChatRead(newest);
+        }
+    }
+
+    private void updateChatHeader() {
+        if (chatPeerName == null) return;
+        String host = ipInput == null ? "" : ipInput.getText().toString().trim();
+        if (host.isEmpty()) host = getPreferences(MODE_PRIVATE).getString("last_host", "");
+        String peerName = host.isEmpty() ? "" : getPreferences(MODE_PRIVATE).getString("paired_host_name:" + host, "");
+        chatPeerName.setText(peerName.isEmpty() ? (english ? "Paired computer" : "已配对的电脑") : peerName);
+        boolean online = client != null && client.isConnected();
+        if (chatConnectionLabel != null) chatConnectionLabel.setText(online
+                ? (english ? "Online · direct local connection" : "在线 · 局域网直连")
+                : (english ? "Offline · local chat history" : "离线 · 可查看本地聊天记录"));
+        if (chatOnlineDot != null) {
+            int dotColor = online ? Color.rgb(0, 220, 130) : Color.rgb(115, 125, 119);
+            chatOnlineDot.setBackground(box(dotColor, dotColor, dp(6)));
+        }
+    }
+
+    /** 构造一条消息气泡（自己发的靠右、绿色；对方发的靠左、深色）。 */
+    private View chatBubble(org.json.JSONObject message) {
+        boolean out = "out".equals(message.optString("dir", ""));
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity((out ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2); rowParams.setMargins(0, dp(4), 0, dp(4)); row.setLayoutParams(rowParams);
+
+        String kind = message.optString("kind", "text");
+        LinearLayout bubble = new LinearLayout(this); bubble.setOrientation(LinearLayout.VERTICAL);
+        bubble.setPadding(dp(12), dp(9), dp(12), dp(9));
+        bubble.setBackground(solidBox(out ? Color.rgb(18, 61, 43) : Color.rgb(32, 38, 34), dp(16)));
+        int maxWidth = Math.round(getResources().getDisplayMetrics().widthPixels * 0.72f);
+
+        if ("file".equals(kind)) {
+            String fileName = message.optString("fileName", "文件");
+            long fileSize = message.optLong("fileSize", 0);
+            String localUri = message.optString("localUri", "");
+            Uri attachmentUri = localUri.isEmpty() ? null : Uri.parse(localUri);
+            String glyph = fileTypeGlyph(fileName);
+            if ("IMG".equals(glyph) && attachmentUri != null) {
+                FrameLayout previewFrame = new FrameLayout(this);
+                ImageView preview = new ImageView(this); preview.setTag(attachmentUri); preview.setScaleType(ImageView.ScaleType.CENTER_CROP); preview.setBackground(solidBox(Color.rgb(24, 30, 27), dp(10)));
+                previewFrame.addView(preview, new FrameLayout.LayoutParams(dp(176), dp(132)));
+                TextView fallback = text("IMG", 12, Color.rgb(0, 232, 135)); fallback.setGravity(Gravity.CENTER); previewFrame.addView(fallback, new FrameLayout.LayoutParams(dp(176), dp(132)));
+                LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(dp(176), dp(132)); previewParams.bottomMargin = dp(7); bubble.addView(previewFrame, previewParams);
+                loadThumbnail(attachmentUri, preview, fallback, fileName); previewFrame.setOnClickListener(v -> openChatAttachment(message));
+            }
+            TextView name = text(fileName, 14, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setMaxWidth(maxWidth); bubble.addView(name);
+            TextView meta = text(glyphLabel(glyph) + "  ·  " + android.text.format.Formatter.formatShortFileSize(this, fileSize), 12, Color.rgb(163, 167, 164)); bubble.addView(meta);
+            boolean done = message.optBoolean("done", false);
+            boolean failed = message.optBoolean("failed", false);
+            int progress = message.optInt("progress", 0);
+            TextView progressText = text(failed ? (english ? "Transfer failed" : "传输失败") : (done ? (out ? (english ? "Sent" : "已发送") : tr("已接收")) : ((english ? "Progress " : "进度 ") + progress + "%")), 12, failed ? Color.rgb(255, 120, 126) : Color.rgb(0, 232, 135));
+            progressText.setPadding(0, dp(4), 0, 0); bubble.addView(progressText);
+            ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(100); bar.setProgress(done ? 100 : progress);
+            bar.setProgressTintList(android.content.res.ColorStateList.valueOf(failed ? Color.rgb(235, 82, 91) : Color.rgb(0, 220, 126))); bar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(48, 57, 51)));
+            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(3)); barParams.topMargin = dp(5); bubble.addView(bar, barParams);
+            String transferId = message.optString("transferId", "");
+            if (!transferId.isEmpty()) { chatProgressViews.put(transferId, progressText); chatProgressBars.put(transferId, bar); }
+            if (!localUri.isEmpty()) {
+                Button open = button(english ? "Open file" : "打开文件"); open.setTextSize(12); open.setMinHeight(dp(34)); open.setPadding(dp(10), 0, dp(10), 0); open.setOnClickListener(v -> openChatAttachment(message));
+                LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(-2, dp(34)); openParams.topMargin = dp(6); bubble.addView(open, openParams);
+            }
+        } else {
+            TextView content = text(message.optString("text", ""), 15, Color.WHITE);
+            content.setMaxWidth(maxWidth);
+            content.setLineSpacing(dp(2), 1f); bubble.addView(content);
+        }
+
+        LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setGravity(out ? Gravity.RIGHT : Gravity.LEFT);
+        body.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
+        TextView metaLine = text(chatTimestamp(message.optLong("ts", 0)) + (out ? "  " + tr(statusLabel(message.optString("status", "sent")) + "") : ""), 11, Color.rgb(127, 132, 128));
+        metaLine.setPadding(dp(2), dp(3), dp(2), 0); body.addView(metaLine, new LinearLayout.LayoutParams(-2, -2));
+        DeviceAvatar avatar = new DeviceAvatar(out);
+        LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(28), dp(28));
+        LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(-2, -2);
+        if (out) { bodyParams.rightMargin = dp(7); row.addView(body, bodyParams); row.addView(avatar, avatarParams); }
+        else { avatarParams.rightMargin = dp(7); row.addView(avatar, avatarParams); row.addView(body, bodyParams); }
+        return row;
+    }
+
+    /** 纯矢量默认头像：本机 Android 显示手机，对端按设备类型显示桌面电脑。 */
+    private final class DeviceAvatar extends View {
+        private final boolean mobile;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        DeviceAvatar(boolean mobile) { super(MainActivity.this); this.mobile = mobile; setContentDescription(mobile ? (english ? "Phone" : "手机") : (english ? "Computer" : "电脑")); }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float s = Math.min(getWidth(), getHeight()), cx = getWidth() / 2f, cy = getHeight() / 2f;
+            paint.setStyle(Paint.Style.FILL); paint.setColor(mobile ? Color.rgb(18, 55, 38) : Color.rgb(32, 42, 36)); canvas.drawCircle(cx, cy, s * .49f, paint);
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeCap(Paint.Cap.ROUND); paint.setStrokeJoin(Paint.Join.ROUND); paint.setStrokeWidth(Math.max(dp(1.4f), s * .055f));
+            paint.setColor(mobile ? Color.rgb(0, 225, 132) : Color.rgb(155, 181, 164));
+            if (mobile) {
+                RectF phone = new RectF(cx - s * .22f, cy - s * .35f, cx + s * .22f, cy + s * .35f); canvas.drawRoundRect(phone, s * .07f, s * .07f, paint);
+                canvas.drawLine(cx - s * .07f, cy + s * .23f, cx + s * .07f, cy + s * .23f, paint);
+            } else {
+                RectF screen = new RectF(cx - s * .34f, cy - s * .25f, cx + s * .34f, cy + s * .20f); canvas.drawRoundRect(screen, s * .055f, s * .055f, paint);
+                canvas.drawLine(cx, cy + s * .20f, cx, cy + s * .33f, paint); canvas.drawLine(cx - s * .19f, cy + s * .34f, cx + s * .19f, cy + s * .34f, paint);
+            }
+        }
+    }
+
+    private GradientDrawable solidBox(int fill, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(fill); d.setCornerRadius(radius); return d; }
+
+    private String statusLabel(String status) {
+        if (ChatStore.STATUS_READ.equals(status)) return "已读";
+        if (ChatStore.STATUS_DELIVERED.equals(status)) return "已送达";
+        return "已发送";
+    }
+
+    private String chatTimestamp(long ts) {
+        if (ts <= 0) return "";
+        return new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(new java.util.Date(ts));
+    }
+
+    private void sendChatText() {
+        if (chatInput == null) return;
+        String content = chatInput.getText().toString();
+        if (content.trim().isEmpty()) return;
+        if (client == null || !client.isConnected()) { toast("请先连接电脑，再发送消息"); return; }
+        String msgId = client.sendChatText(content);
+        if (msgId == null) return;
+        chatInput.setText("");
+        chatStore.append(chatPeerKey(), chatRecord(msgId, "out", "text", content.trim(), System.currentTimeMillis(), ChatStore.STATUS_SENT, "", 0, ""));
+        renderChat();
+    }
+
+    private void pickChatFile() {
+        if (client == null || !client.isConnected()) { toast("请先连接电脑，再发送文件"); return; }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+        try { startActivityForResult(intent, PICK_CHAT_FILE); } catch (Exception e) { toast("无法打开文件选择器"); }
+    }
+
+    private void sendChatFile(Uri uri) {
+        if (client == null || !client.isConnected() || uri == null) return;
+        String transferId = "t_a_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        String msgId = client.sendChatFile(getContentResolver(), uri, transferId);
+        if (msgId == null) return;
+        String name = displayNameForChat(uri);
+        long size = 0;
+        try (android.database.Cursor cursor = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) size = cursor.getLong(0);
+        } catch (Exception ignored) { }
+        org.json.JSONObject record = chatRecord(msgId, "out", "file", "", System.currentTimeMillis(), ChatStore.STATUS_SENT, name, size, transferId);
+        try { record.put("localUri", uri.toString()).put("mime", getContentResolver().getType(uri)); } catch (Exception ignored) { }
+        chatStore.append(chatPeerKey(), record);
+        renderChat();
+        toast("文件已作为消息发送");
+    }
+
+    private String displayNameForChat(Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getString(0);
+        } catch (Exception ignored) { }
+        return "文件";
+    }
+
+    /** 组装一条本地聊天记录（字段名与协议保持一致）。 */
+    private org.json.JSONObject chatRecord(String msgId, String dir, String kind, String text, long ts, String status, String fileName, long fileSize, String transferId) {
+        org.json.JSONObject record = new org.json.JSONObject();
+        try {
+            record.put("msgId", msgId).put("dir", dir).put("kind", kind).put("text", text).put("ts", ts).put("status", status);
+            if (!fileName.isEmpty()) record.put("fileName", fileName);
+            if (fileSize > 0) record.put("fileSize", fileSize);
+            if (!fileName.isEmpty()) record.put("done", false).put("progress", 0);
+            if (transferId != null && !transferId.isEmpty()) record.put("transferId", transferId);
+        } catch (Exception ignored) { }
+        return record;
     }
 
     private void connect() {
@@ -220,6 +517,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         String savedToken = getPreferences(MODE_PRIVATE).getString("paired_host:" + ip, "");
         if (ip.isEmpty() || (code.length() != 6 && savedToken.isEmpty())) { toast("请输入电脑 IP 和 6 位匹配码，或选择已配对设备"); return; }
         connectButton.setEnabled(false); status.setText(tr("正在连接…"));
+        getPreferences(MODE_PRIVATE).edit().putString("last_host", ip).apply();
         client = createClient(); if (code.length() == 6) client.connect(ip, NativeClient.PORT, code); else client.connectPaired(ip, NativeClient.PORT, savedToken);
     }
 
@@ -261,7 +559,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             org.json.JSONObject q = new org.json.JSONObject(payload); String ip = q.optString("ip"); int port = q.optInt("port", NativeClient.PORT); String token = q.optString("token");
             if (ip.isEmpty() || token.isEmpty()) return false;
             connectButton.setEnabled(false); status.setText(tr("正在扫码配对…"));
-            ipInput.setText(ip); client = createClient(); client.connectWithQr(ip, port, token); return true;
+            ipInput.setText(ip); getPreferences(MODE_PRIVATE).edit().putString("last_host", ip).apply();
+            client = createClient(); client.connectWithQr(ip, port, token); return true;
         } catch (Exception ignored) { return false; }
     }
 
@@ -271,7 +570,16 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data); if (request != PICK_FILES || result != RESULT_OK || data == null) return;
+        super.onActivityResult(request, result, data);
+        if (request == PICK_CHAT_FILE) {
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                Uri uri = data.getData();
+                try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) { }
+                sendChatFile(uri);
+            }
+            return;
+        }
+        if (request != PICK_FILES || result != RESULT_OK || data == null) return;
         if (data.getClipData() != null) for (int i = 0; i < data.getClipData().getItemCount(); i++) addPickedUri(data.getClipData().getItemAt(i).getUri()); else if (data.getData() != null) addPickedUri(data.getData());
         updatePendingText();
     }
@@ -334,6 +642,26 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
     private String fileTypeGlyph(String fileName) { String name = fileName.toLowerCase(java.util.Locale.ROOT); if (name.matches(".*\\.(png|jpe?g|gif|webp|heic|bmp)$")) return "IMG"; if (name.matches(".*\\.(mp4|mov|mkv|webm)$")) return "VID"; if (name.matches(".*\\.(zip|rar|7z|tar|gz)$")) return "ZIP"; if (name.matches(".*\\.(txt|md|csv|docx?|pdf|xlsx?)$")) return "DOC"; return "FILE"; }
 
+    private String glyphLabel(String glyph) {
+        if ("IMG".equals(glyph)) return english ? "Image" : "图片";
+        if ("VID".equals(glyph)) return english ? "Video" : "视频";
+        if ("DOC".equals(glyph)) return english ? "Document" : "文档";
+        if ("ZIP".equals(glyph)) return english ? "Archive" : "压缩包";
+        return english ? "File" : "文件";
+    }
+
+    private void openChatAttachment(org.json.JSONObject message) {
+        String raw = message.optString("localUri", "");
+        if (raw.isEmpty()) { toast(english ? "This file is not available on this device" : "此文件尚未保存在本设备"); return; }
+        try {
+            Uri uri = Uri.parse(raw); String mime = message.optString("mime", "");
+            if (mime.isEmpty()) mime = getContentResolver().getType(uri);
+            if (mime == null || mime.isEmpty()) mime = "*/*";
+            Intent intent = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(intent, english ? "Open with" : "打开文件"));
+        } catch (Exception e) { toast(english ? "No app can open this file" : "没有可打开此文件的应用"); }
+    }
+
     private void loadThumbnail(Uri uri, ImageView image, TextView fallback, String fileName) {
         String type = fileTypeGlyph(fileName);
         if (Build.VERSION.SDK_INT < 29 || (!type.equals("IMG") && !type.equals("VID"))) return;
@@ -379,7 +707,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             found = true; String serverId = prefs.getString("paired_host_device:" + host, ""); String name = prefs.getString("paired_host_name:" + host, english ? "Computer" : "电脑"); String token = (String) entry.getValue();
             LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(4), dp(6), dp(4)); row.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12)));
             TextView identity = text(name + "\n" + host, 13, Color.WHITE); identity.setGravity(Gravity.CENTER_VERTICAL); row.addView(identity, new LinearLayout.LayoutParams(0, dp(54), 1));
-            Button connectSaved = button(english ? "Connect" : "连接"); connectSaved.setTextSize(12); connectSaved.setOnClickListener(v -> { ipInput.setText(host); client = createClient(); connectButton.setEnabled(false); status.setText(tr("正在连接…")); client.connectPaired(host, NativeClient.PORT, token); }); row.addView(connectSaved, new LinearLayout.LayoutParams(dp(88), dp(42)));
+            Button connectSaved = button(english ? "Connect" : "连接"); connectSaved.setTextSize(12); connectSaved.setOnClickListener(v -> { ipInput.setText(host); getPreferences(MODE_PRIVATE).edit().putString("last_host", host).apply(); client = createClient(); connectButton.setEnabled(false); status.setText(tr("正在连接…")); client.connectPaired(host, NativeClient.PORT, token); }); row.addView(connectSaved, new LinearLayout.LayoutParams(dp(88), dp(42)));
             Button remove = new Button(this); remove.setText("×"); remove.setContentDescription(english ? "Remove trusted device " + name : "删除可信设备 " + name); remove.setTextColor(Color.rgb(255,118,126)); remove.setTextSize(22); remove.setBackgroundColor(Color.TRANSPARENT); remove.setOnClickListener(v -> removePairedDevice(host, serverId)); row.addView(remove, new LinearLayout.LayoutParams(dp(40), dp(44)));
             LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2); rowParams.setMargins(0, dp(4), 0, dp(4)); pairedDevicesList.addView(row, rowParams);
         }
@@ -409,19 +737,33 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     }
 
     private FrameLayout buildIncomingOverlay() {
-        FrameLayout overlay = new FrameLayout(this); overlay.setPadding(dp(16), dp(14), dp(16), dp(14)); overlay.setBackground(box(Color.rgb(23, 31, 27), Color.rgb(0, 210, 131), dp(16))); overlay.setElevation(dp(12));
+        FrameLayout overlay = new FrameLayout(this); overlay.setPadding(dp(16), dp(16), dp(16), dp(16)); overlay.setBackground(box(Color.rgb(23, 29, 26), Color.rgb(54, 70, 61), dp(20))); overlay.setElevation(dp(16));
         LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text("收到文件", 17, Color.WHITE); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); body.addView(title, new LinearLayout.LayoutParams(-1, dp(28)));
-        incomingOverlayText = text("收到文件，请选择接收或拒绝", 13, Color.rgb(163, 167, 164)); incomingOverlayText.setLineSpacing(dp(2), 1f); ScrollView details = new ScrollView(this); details.setFillViewport(false); details.setVerticalScrollBarEnabled(true); details.addView(incomingOverlayText, new ScrollView.LayoutParams(-1, -2)); body.addView(details, new LinearLayout.LayoutParams(-1, dp(96)));
+        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setOrientation(LinearLayout.HORIZONTAL);
+        TextView icon = text("↓", 22, Color.rgb(6, 35, 23)); icon.setGravity(Gravity.CENTER); icon.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); icon.setBackground(box(Color.rgb(0, 210, 131), Color.rgb(0, 210, 131), dp(14))); header.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout heading = new LinearLayout(this); heading.setOrientation(LinearLayout.VERTICAL); heading.setPadding(dp(12), 0, 0, 0);
+        TextView title = text(english ? "Incoming files" : "收到文件", 17, Color.WHITE); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); heading.addView(title);
+        TextView hint = text(english ? "Review details before accepting" : "请确认来源与文件信息", 12, Color.rgb(144, 155, 148)); LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(-1, -2); hintParams.topMargin = dp(3); heading.addView(hint, hintParams);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); body.addView(header);
+
+        LinearLayout network = new LinearLayout(this); network.setOrientation(LinearLayout.VERTICAL); network.setPadding(dp(12), dp(10), dp(12), dp(10)); network.setBackground(box(Color.rgb(18, 24, 21), Color.rgb(42, 51, 46), dp(12))); LinearLayout.LayoutParams networkParams = new LinearLayout.LayoutParams(-1, -2); networkParams.topMargin = dp(14); body.addView(network, networkParams);
+        TextView sourceLabel = text(english ? "SENDING DEVICE" : "发送设备", 10, Color.rgb(122, 140, 129)); network.addView(sourceLabel);
+        incomingDeviceText = text("—", 14, Color.WHITE); incomingDeviceText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); LinearLayout.LayoutParams deviceParams = new LinearLayout.LayoutParams(-1, -2); deviceParams.topMargin = dp(3); network.addView(incomingDeviceText, deviceParams);
+        incomingIpText = text("IP · —", 12, Color.rgb(155, 169, 160)); LinearLayout.LayoutParams ipParams = new LinearLayout.LayoutParams(-1, -2); ipParams.topMargin = dp(4); network.addView(incomingIpText, ipParams);
+
+        TextView filesLabel = text(english ? "FILES & TRANSFER DETAILS" : "文件与传输详情", 10, Color.rgb(122, 140, 129)); LinearLayout.LayoutParams filesLabelParams = new LinearLayout.LayoutParams(-1, -2); filesLabelParams.topMargin = dp(14); filesLabelParams.bottomMargin = dp(6); body.addView(filesLabel, filesLabelParams);
+        incomingOverlayText = text(english ? "Review the incoming file list" : "待接收文件详情", 12, Color.rgb(191, 199, 194)); incomingOverlayText.setLineSpacing(dp(3), 1f); ScrollView details = new ScrollView(this); details.setFillViewport(false); details.setVerticalScrollBarEnabled(true); details.setPadding(dp(12), dp(10), dp(12), dp(10)); details.setBackground(box(Color.rgb(18, 24, 21), Color.rgb(42, 51, 46), dp(12))); details.addView(incomingOverlayText, new ScrollView.LayoutParams(-1, -2)); body.addView(details, new LinearLayout.LayoutParams(-1, dp(92)));
         LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL); actions.setGravity(Gravity.CENTER_VERTICAL);
-        Button reject = button("拒绝接收"); reject.setTextColor(Color.WHITE); reject.setBackground(box(Color.rgb(31,36,33), Color.rgb(180,70,80), dp(10))); reject.setOnClickListener(v -> { if (client != null) client.rejectIncomingOffer(); hideIncomingOverlay(); receiveActions.setVisibility(View.GONE); });
-        Button accept = button("确认接收"); accept.setOnClickListener(v -> { if (client != null) client.acceptIncomingOffer(); hideIncomingOverlay(); receiveActions.setVisibility(View.GONE); });
-        actions.addView(reject, new LinearLayout.LayoutParams(0, dp(46), 1)); actions.addView(accept, new LinearLayout.LayoutParams(0, dp(46), 1)); body.addView(actions, new LinearLayout.LayoutParams(-1, dp(52)));
+        Button reject = button(english ? "Decline" : "拒绝接收"); reject.setTextColor(Color.rgb(202, 211, 205)); reject.setBackground(box(Color.rgb(28, 34, 30), Color.rgb(53, 63, 56), dp(12))); reject.setOnClickListener(v -> { if (client != null) client.rejectIncomingOffer(); hideIncomingOverlay(); receiveActions.setVisibility(View.GONE); });
+        Button accept = button(english ? "Accept files" : "接收文件"); accept.setOnClickListener(v -> { if (client != null) { client.acceptIncomingOffer(); client.setChatSilentAccept(true); } hideIncomingOverlay(); receiveActions.setVisibility(View.GONE); });
+        LinearLayout.LayoutParams rejectParams = new LinearLayout.LayoutParams(0, dp(48), 1); rejectParams.rightMargin = dp(9); LinearLayout.LayoutParams acceptParams = new LinearLayout.LayoutParams(0, dp(48), 1); actions.addView(reject, rejectParams); actions.addView(accept, acceptParams); LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(-1, dp(52)); actionsParams.topMargin = dp(10); body.addView(actions, actionsParams);
         overlay.addView(body, new FrameLayout.LayoutParams(-1, -2)); return overlay;
     }
 
     private void showIncomingOverlay(String label, String deviceName, String ip) {
-        if (incomingOverlayText != null) incomingOverlayText.setText(english ? "From: " + deviceName + "\nIP: " + ip + "\nFile: " + label : "来源设备：" + deviceName + "\nIP 地址：" + ip + "\n文件：" + label);
+        if (incomingDeviceText != null) incomingDeviceText.setText(deviceName == null || deviceName.isEmpty() ? (english ? "Unknown device" : "未知设备") : deviceName);
+        if (incomingIpText != null) incomingIpText.setText("IP · " + (ip == null || ip.isEmpty() ? "—" : ip) + "   ·   " + (english ? "Port " : "端口 ") + NativeClient.PORT);
+        if (incomingOverlayText != null) incomingOverlayText.setText(label == null || label.isEmpty() ? (english ? "Incoming files" : "待接收文件") : label);
         if (incomingOverlay != null) incomingOverlay.setVisibility(View.VISIBLE);
     }
 
@@ -505,6 +847,14 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             case "设置": return "Settings";
             case "连接": return "Connect";
             case "发送": return "Send";
+            case "聊天": return "Chat";
+            case "输入消息…": return "Type a message…";
+            case "与电脑的对话仅在本机局域网内传输，不经过任何服务器。": return "This conversation travels only on your local network — no servers involved.";
+            case "还没有消息。在下面输入，或点「+」把文件当消息发过去。": return "No messages yet. Type below, or tap + to send a file as a message.";
+            case "已发送": return "Sent";
+            case "已送达": return "Delivered";
+            case "已读": return "Read";
+            case "已接收": return "Received";
             case "原生 Android 应用": return "Native Android app";
             case "关于与联系": return "About & contact";
             case "快捷入口": return "Quick links";
@@ -546,22 +896,109 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         }
     }
 
-    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText((english ? "Connected · " : "已连接 · ") + name); connectButton.setEnabled(true); connectButton.setText(tr("已连接")); pickButton.setText(tr("选择文件")); updateSendButtonState(); }); }
+    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText((english ? "Connected · " : "已连接 · ") + name); connectButton.setEnabled(true); connectButton.setText(tr("已连接")); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); }); }
     @Override public void onConnectionDetails(String name, String serverId, String token, String host) { SharedPreferences prefs = getPreferences(MODE_PRIVATE); SharedPreferences.Editor editor = prefs.edit(); if (host != null && !host.isEmpty()) { if (token != null && !token.isEmpty()) editor.putString("paired_host:" + host, token); if (serverId != null && !serverId.isEmpty()) { editor.putString("paired_host_device:" + host, serverId); if (token != null && !token.isEmpty()) editor.putString("paired_device:" + serverId, token); } editor.putString("paired_host_name:" + host, name); } editor.putString("last_connect_name", name); editor.apply(); runOnUiThread(this::renderPairedDevices); }
-    @Override public void onError(String message) { runOnUiThread(() -> { if (message != null && (message.contains("匹配凭证已失效") || message.contains("Pairing token expired"))) { String ip = ipInput.getText().toString().trim(); SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit().remove("paired_host:" + ip); String serverId = getPreferences(MODE_PRIVATE).getString("paired_host_device:" + ip, ""); if (!serverId.isEmpty()) editor.remove("paired_device:" + serverId).remove("paired_host_device:" + ip); editor.apply(); codeInput.requestFocus(); } status.setText(tr("连接失败")); connectButton.setEnabled(true); updateSendButtonState(); toast(message); }); }
+    @Override public void onError(String message) { runOnUiThread(() -> { if (message != null && (message.contains("匹配凭证已失效") || message.contains("Pairing token expired"))) { String ip = ipInput.getText().toString().trim(); SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit().remove("paired_host:" + ip); String serverId = getPreferences(MODE_PRIVATE).getString("paired_host_device:" + ip, ""); if (!serverId.isEmpty()) editor.remove("paired_device:" + serverId).remove("paired_host_device:" + ip); editor.apply(); codeInput.requestFocus(); } status.setText(tr("连接失败")); connectButton.setEnabled(true); updateSendButtonState(); updateChatHeader(); toast(message); }); }
     @Override public void onRejected(String reason) { runOnUiThread(() -> { status.setText(english ? "Transfer rejected by the computer" : "电脑已拒绝接收"); toast(english ? "The recipient declined this transfer" : "对方拒绝了本次文件传输"); }); }
     @Override public void onSendWaiting(List<Uri> files) { runOnUiThread(() -> { sendInProgress = true; status.setText(english ? "Waiting for recipient approval" : "等待电脑确认接收"); updateSendButtonState(); }); }
     @Override public void onSendAccepted(List<Uri> files) { runOnUiThread(() -> { pendingUris.removeAll(files); updatePendingText(); status.setText(english ? "Sending files…" : "正在发送文件…"); }); }
     @Override public void onSendFailed(List<Uri> files, String error) { runOnUiThread(() -> { for (Uri uri : files) if (!pendingUris.contains(uri)) pendingUris.add(uri); sendInProgress = false; updatePendingText(); updateSendButtonState(); }); }
     @Override public void onSendRejected(List<Uri> files) { runOnUiThread(() -> { sendInProgress = false; updatePendingText(); updateSendButtonState(); }); }
-    @Override public void onTransferFinished(boolean incoming, String label, boolean success) { if (!incoming) runOnUiThread(() -> { sendInProgress = false; updateSendButtonState(); }); recordTransfer(incoming, label, success); }
-    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件")); updateSendButtonState(); }); }
+    @Override public void onTransferFinished(boolean incoming, String label, boolean success) {
+        if (!incoming) runOnUiThread(() -> { sendInProgress = false; updateSendButtonState(); });
+        else runOnUiThread(this::renderChat);
+        recordTransfer(incoming, label, success);
+    }    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); }); }
     @Override public void onIncomingOffer(String label, String deviceName, String ip) { runOnUiThread(() -> { status.setText(english ? "Waiting for confirmation" : "等待接收确认"); receiveText.setText(english ? "From: " + deviceName + " · " + ip + "\nFiles: " + label : "来源：" + deviceName + " · " + ip + "\n文件：" + label); showIncomingOverlay(label, deviceName, ip); toast(english ? "Incoming files · review and accept or decline" : "收到文件，请确认接收或拒绝"); showIncomingNotification(label, deviceName, ip); }); }
 
     private void createNotificationChannel() { if (Build.VERSION.SDK_INT >= 26) { NotificationChannel c = new NotificationChannel("transfer", english ? "File transfers" : "文件传输", NotificationManager.IMPORTANCE_DEFAULT); getSystemService(NotificationManager.class).createNotificationChannel(c); } }
-    private void showIncomingNotification(String label, String deviceName, String ip) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77); return; } int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0); Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent openAction = PendingIntent.getActivity(this, 77, open, flags); Intent accept = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.ACCEPT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); Intent reject = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.REJECT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent acceptAction = PendingIntent.getActivity(this, 78, accept, flags); PendingIntent rejectAction = PendingIntent.getActivity(this, 79, reject, flags); android.app.Notification.Builder notification = new android.app.Notification.Builder(this, "transfer").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle(english ? "Incoming files · Nearby Transfer" : "邻传收到文件").setContentText((english ? "From " : "来自 ") + deviceName + " · " + ip + " · " + label).setContentIntent(openAction).setAutoCancel(true).addAction(0, english ? "Decline" : "拒绝", rejectAction).addAction(0, english ? "Accept" : "接收", acceptAction); NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, notification.build()); }
+    private void showIncomingNotification(String label, String deviceName, String ip) { if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) return; int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0); Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent openAction = PendingIntent.getActivity(this, 77, open, flags); Intent accept = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.ACCEPT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); Intent reject = new Intent(this, MainActivity.class).setAction("com.lantransfer.mobile.REJECT_INCOMING").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); PendingIntent acceptAction = PendingIntent.getActivity(this, 78, accept, flags); PendingIntent rejectAction = PendingIntent.getActivity(this, 79, reject, flags); android.app.Notification.Builder notification = new android.app.Notification.Builder(this, "transfer").setSmallIcon(com.lantransfer.mobile.R.mipmap.ic_launcher).setContentTitle(english ? "Incoming files · Nearby Transfer" : "邻传收到文件").setContentText((english ? "From " : "来自 ") + deviceName + " · " + ip + " · " + label).setContentIntent(openAction).setAutoCancel(true).addAction(0, english ? "Decline" : "拒绝", rejectAction).addAction(0, english ? "Accept" : "接收", acceptAction); NotificationManager n = (NotificationManager) getSystemService(NOTIFICATION_SERVICE); n.notify(77, notification.build()); }
+
+    private void showNotificationPermissionDialog() {
+        boolean granted = Build.VERSION.SDK_INT < 33 || checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED;
+        if (granted) { toast(english ? "Notifications are enabled" : "通知已开启"); return; }
+        android.app.Dialog dialog = new android.app.Dialog(this); dialog.getWindow();
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(22), dp(20), dp(22), dp(18)); panel.setBackground(box(Color.rgb(20, 27, 23), Color.rgb(0, 196, 117), dp(22)));
+        TextView icon = text("🔔", 25, Color.rgb(0, 232, 135)); icon.setGravity(Gravity.CENTER); panel.addView(icon, params(-1, dp(42)));
+        TextView title = text(english ? "Stay on top of incoming files" : "及时看到收到的文件", 19, Color.WHITE); title.setGravity(Gravity.CENTER); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(title, params(-1, dp(34)));
+        TextView copy = text(english ? "Allow notifications to see file requests and transfer updates when Nearby Transfer is in the background." : "允许通知后，邻传在后台时也能提醒你确认文件，并告知传输状态。你仍可在应用内查看和处理文件。", 14, Color.rgb(177, 187, 180)); copy.setGravity(Gravity.CENTER); copy.setLineSpacing(dp(3), 1f); LinearLayout.LayoutParams copyParams = params(-1, -2); copyParams.topMargin = dp(6); copyParams.bottomMargin = dp(18); panel.addView(copy, copyParams);
+        LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER_VERTICAL); actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button later = button(english ? "Not now" : "稍后再说"); later.setTextSize(13); actions.addView(later, new LinearLayout.LayoutParams(0, dp(44), 1));
+        Button allow = button(english ? "Continue" : "继续授权"); allow.setTextSize(13); LinearLayout.LayoutParams allowParams = new LinearLayout.LayoutParams(0, dp(44), 1); allowParams.leftMargin = dp(10); actions.addView(allow, allowParams); panel.addView(actions);
+        dialog.setContentView(panel); android.view.Window window = dialog.getWindow(); if (window != null) { window.setBackgroundDrawableResource(android.R.color.transparent); window.setLayout((int)(getResources().getDisplayMetrics().widthPixels * .88f), -2); window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND); android.view.WindowManager.LayoutParams lp = window.getAttributes(); lp.dimAmount = .72f; window.setAttributes(lp); }
+        later.setOnClickListener(v -> dialog.dismiss()); allow.setOnClickListener(v -> { dialog.dismiss(); if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77); else { try { startActivity(new Intent("android.settings.APP_NOTIFICATION_SETTINGS").putExtra("android.provider.extra.APP_PACKAGE", getPackageName())); } catch (Exception ignored) { } } }); dialog.show(); if (dialog.getWindow() != null) dialog.getWindow().setLayout((int)(getResources().getDisplayMetrics().widthPixels * .88f), -2);
+    }
     @Override public void onProgress(int percent) { onProgress(percent, false); }
-    @Override public void onProgress(int percent, boolean receiving) { runOnUiThread(() -> status.setText(english ? (receiving ? "Receiving " : "Sending ") + percent + "%" : (receiving ? "正在接收 " : "正在发送 ") + percent + "%")); }
+    @Override public void onProgress(int percent, boolean receiving) {
+        runOnUiThread(() -> {
+            status.setText(english ? (receiving ? "Receiving " : "Sending ") + percent + "%" : (receiving ? "正在接收 " : "正在发送 ") + percent + "%");
+            // 聊天页的文件气泡就地刷新进度（不重建整棵列表，避免闪烁）。
+        });
+    }
+
+    @Override public void onChatFileProgress(String transferId, int percent) {
+        runOnUiThread(() -> {
+            chatStore.updateAttachmentProgress(chatPeerKey(), transferId, percent);
+            TextView progress = chatProgressViews.get(transferId);
+            if (progress != null) progress.setText((english ? "Progress " : "进度 ") + percent + "%");
+            ProgressBar bar = chatProgressBars.get(transferId); if (bar != null) bar.setProgress(percent);
+        });
+    }
+
+    @Override public void onChatFileFinished(String transferId, boolean incoming, boolean success, Uri uri) {
+        runOnUiThread(() -> {
+            String mime = "";
+            try { if (uri != null) mime = getContentResolver().getType(uri); } catch (Exception ignored) { }
+            chatStore.updateAttachmentLocation(chatPeerKey(), transferId, success && uri != null ? uri.toString() : "", mime, success);
+            if (!success) chatStore.updateAttachmentFailure(chatPeerKey(), transferId);
+            renderChat();
+        });
+    }
+
+    // ── 聊天回调 ───────────────────────────────────────────────
+
+    @Override public void onChatMessage(String msgId, long ts, String text, String fileName, long fileSize, String transferId) {
+        runOnUiThread(() -> {
+            String peer = chatPeerKey();
+            org.json.JSONObject record = new org.json.JSONObject();
+            try {
+                boolean isFile = fileName != null && !fileName.isEmpty();
+                record.put("msgId", msgId).put("dir", "in").put("kind", isFile ? "file" : "text")
+                        .put("text", text == null ? "" : text).put("ts", ts).put("status", ChatStore.STATUS_READ);
+                if (isFile) record.put("fileName", fileName).put("fileSize", fileSize).put("done", false).put("progress", 0);
+                if (transferId != null && !transferId.isEmpty()) record.put("transferId", transferId);
+            } catch (Exception ignored) { }
+            chatStore.append(peer, record);
+            // 收到对端消息时直接进入聊天页，保持桌面端与手机端行为一致。
+            showPage(2);
+            toast(english ? "New chat message from the computer" : "收到电脑端的新消息");
+        });
+    }
+
+    @Override public void onChatAck(String msgId, long ts) {
+        runOnUiThread(() -> { chatStore.updateStatus(chatPeerKey(), msgId, ChatStore.STATUS_DELIVERED); renderChat(); });
+    }
+
+    @Override public void onChatRead(long upToTs) {
+        runOnUiThread(() -> {
+            String peer = chatPeerKey();
+            for (org.json.JSONObject message : chatStore.list(peer)) {
+                if ("out".equals(message.optString("dir", "")) && message.optLong("ts", 0) <= upToTs) {
+                    chatStore.updateStatus(peer, message.optString("msgId", ""), ChatStore.STATUS_READ);
+                }
+            }
+            renderChat();
+        });
+    }
+
+    @Override public void onChatFileAccepted(String transferId) {
+        runOnUiThread(() -> { chatStore.updateAttachmentDone(chatPeerKey(), transferId, false); renderChat(); });
+    }
+
+    @Override public void onChatFileRejected(String transferId) {
+        runOnUiThread(() -> { chatStore.updateAttachmentFailure(chatPeerKey(), transferId); toast(english ? "The computer declined the file" : "电脑端拒绝了该文件"); renderChat(); });
+    }
+
     @Override protected void onDestroy() { if (client != null) client.close(); if (discovery != null) discovery.stop(); thumbnailExecutor.shutdownNow(); super.onDestroy(); }
 
     private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(tr(value)); v.setTextSize(size); v.setTextColor(color); v.setBackgroundColor(Color.TRANSPARENT); return v; }
@@ -569,6 +1006,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private Button button(String label) { Button b = new Button(this); b.setText(tr(label)); b.setTextSize(15); b.setTextColor(Color.rgb(7,26,18)); b.setAllCaps(false); b.setPadding(dp(12), 0, dp(12), 0); b.setBackground(box(Color.rgb(7,193,96), Color.rgb(7,193,96), dp(12))); return b; }
     private GradientDrawable box(int fill, int stroke, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(fill); d.setCornerRadius(radius); d.setStroke(dp(1), stroke); return d; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private LinearLayout.LayoutParams params(int width, int height) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(width, dp(height)); p.setMargins(0, dp(6), 0, dp(6)); return p; }
     private String localizeError(String message) {
         if (!english || message == null) return tr(message);

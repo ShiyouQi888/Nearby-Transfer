@@ -4,7 +4,7 @@
   <p><strong>让文件，在你的设备之间自由流动。</strong></p>
   <p>Windows 电脑与 Android 手机的局域网高速互传工具</p>
 
-  <a href="https://github.com/ShiyouQi888/Nearby-Transfer/releases/tag/v1.0.3">下载最新版</a>
+  <a href="https://github.com/ShiyouQi888/Nearby-Transfer/releases/latest">下载最新版</a>
   ·
   <a href="https://linchuan.aeback.com">官方网站</a>
   ·
@@ -78,12 +78,13 @@
 
 ## 下载与安装
 
-当前版本：**v1.0.3**
+当前版本：**v1.1.1**
 
 | 平台 | 下载 | 说明 |
 |---|---|---|
-| Windows | [Nearby-Transfer-Setup-1.0.3.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.3/Nearby-Transfer-Setup-1.0.3.exe) | Windows x64 安装包 |
-| Android | [Nearby-Transfer-v1.0.3-debug.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.0.3/Nearby-Transfer-v1.0.3-debug.apk) | Android APK |
+| Windows | [Nearby-Transfer-Setup-1.1.1.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.1/Nearby-Transfer-Setup-1.1.1.exe) | Windows x64 安装包 |
+| Android | [Nearby-Transfer-Android-1.1.1.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.1/Nearby-Transfer-Android-1.1.1.apk) | Android 正式签名 APK |
+| Microsoft Store | [Nearby-Transfer-Store-1.1.1.msixupload](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.1/Nearby-Transfer-Store-1.1.1.msixupload) | Partner Center 提交包（商店审核/上架另行完成） |
 
 ### 使用前提
 

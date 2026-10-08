@@ -44,6 +44,7 @@ class Session extends EventEmitter {
     sock.on('data', (d) => {
       try { this.decoder.push(d); } catch (e) { this.emit('session:error', e); }
     });
+    if (process.env.LTP_TRACE) sock.on('data', (d) => console.error('[LTP-RAW]', this.id, 'bytes=' + d.length, 'paired=' + this.paired, 'auth=' + this.authMode));
     sock.on('error', (e) => { this.emit('session:error', e); });
     sock.on('close', () => this._close());
     sock.setNoDelay(true);
@@ -54,6 +55,7 @@ class Session extends EventEmitter {
 
   send(obj) {
     if (this.closed) return;
+    if (process.env.LTP_TRACE) console.error('[LTP-RAW out]', this.id, obj && obj.type);
     try { this.sock.write(P.encodeMessage(obj)); } catch (e) { this.emit('session:error', e); }
   }
 
@@ -80,6 +82,7 @@ class Session extends EventEmitter {
 
   _onMessage(msg) {
     if (!msg || typeof msg.type !== 'string') return;
+    if (process.env.LTP_TRACE) console.error('[LTP-TRACE in]', msg.type, JSON.stringify(msg).slice(0, 300));
     switch (msg.type) {
       case P.MSG.HELLO: return this._onHello(msg);
       case P.MSG.PAIR_REQUEST: return this._onPairRequest(msg);
@@ -189,7 +192,11 @@ class Session extends EventEmitter {
     const offer = {
       sessionId: this.id,
       transferId: msg.transferId,
-      device: this.peerDevice,
+      device: this.peerDevice ? {
+        ...this.peerDevice,
+        ip: String(this.sock.remoteAddress || '').replace(/^::ffff:/, ''),
+      } : { ip: String(this.sock.remoteAddress || '').replace(/^::ffff:/, '') },
+      port: this.server.port,
       files,
       totalBytes: msg.totalBytes || files.reduce((a, f) => a + (f.size || 0), 0),
       saveDir: this.server.saveDir,
@@ -197,10 +204,38 @@ class Session extends EventEmitter {
       chatId: msg.chatId || null,
       origin: msg.origin || null,
     };
-    this.pendingOffer = offer;
 
+    // Android 端先发 chat_send 建立占位消息，随后才发送 send_offer。
+    // 以正式 offer 清单回填文件名、大小和 transferId，兼容旧手机端未在
+    // chat_send 中携带附件元数据的情况，并让进度/完成事件能关联回气泡。
     const peerId = this.peerDevice && this.peerDevice.deviceId;
     const chatStore = this.server.chatStore;
+    if (offer.origin === 'chat' && offer.chatId && peerId && chatStore) {
+      const existing = chatStore.list(peerId, { limit: P.CHAT_HISTORY_LIMIT || 2000 }).messages
+        .find((item) => item.msgId === offer.chatId);
+      if (existing) {
+        const previous = existing.attachment || {};
+        chatStore.updateStatus(peerId, existing.msgId, {
+          kind: 'file',
+          attachment: {
+            ...previous,
+            transferId: offer.transferId,
+            files: files.map((file) => ({
+              fileId: file.fileId,
+              name: file.name || '文件',
+              size: Number(file.size) || 0,
+              mime: file.mime || 'application/octet-stream',
+              isDir: !!file.isDir,
+              relPath: file.relPath || file.name || '',
+            })),
+            totalBytes: offer.totalBytes,
+            transferredBytes: 0,
+          },
+        });
+      }
+    }
+    this.pendingOffer = offer;
+
     const auto = msg.origin === 'chat' && peerId && chatStore &&
       chatStore.canAutoAccept(peerId, { files, totalBytes: offer.totalBytes });
     if (auto) {
@@ -539,8 +574,14 @@ class Session extends EventEmitter {
       text,
       ts: msg.ts || Date.now(),
       status: 'received',
-      attachment: msg.attachment || null,
+      attachment: msg.attachment || (msg.kind === 'file' ? {
+        transferId: msg.transferId || null,
+        files: [{ fileId: 'f_1', name: msg.fileName || '文件', size: Number(msg.fileSize) || 0, mime: msg.mime || 'application/octet-stream' }],
+        totalBytes: Number(msg.fileSize) || 0,
+        transferredBytes: 0,
+      } : null),
       peerName: this.peerDevice && this.peerDevice.name,
+      peerType: this.peerDevice && this.peerDevice.type,
       silent: !!msg.silent,
     });
 

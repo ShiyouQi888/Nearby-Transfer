@@ -1077,6 +1077,7 @@ function markChatTransferDone(transferId, ok = true) {
 
 function setPane(pane) {
   state.pane = pane;
+  $('screen-main').classList.toggle('chat-open', pane === 'chat');
   document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('is-on', b.dataset.pane === pane));
   document.querySelectorAll('#pane-files, #pane-chat').forEach((el) => {
     el.classList.toggle('is-on', el.dataset.pane === pane);

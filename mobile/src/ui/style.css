@@ -634,6 +634,34 @@ button:focus-visible, input:focus-visible {
 .pane { display: none; }
 .pane.is-on { display: block; }
 
+/* 聊天使用独立的纵向布局：固定顶部信息与输入栏，只让消息列表滚动。 */
+.screen.chat-open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.screen.chat-open .peer-card,
+.screen.chat-open .seg { flex: 0 0 auto; }
+.screen.chat-open .seg { margin-bottom: 8px; }
+.screen.chat-open #pane-chat.is-on {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.screen.chat-open #pane-chat > .chat-day { flex: 0 0 auto; }
+.screen.chat-open #pane-chat > .chat-timeline {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.screen.chat-open #btnDisconnect { display: none; }
+
 /* 时间线 */
 .chat-timeline { display: flex; flex-direction: column; padding-bottom: 8px; }
 .chat-day {
@@ -711,9 +739,11 @@ button:focus-visible, input:focus-visible {
 /* 输入区 */
 .chat-composer {
   display: flex; align-items: flex-end; gap: 8px;
-  margin-top: 12px; padding: 8px; position: sticky; bottom: 0;
-  border-radius: var(--ds-radius-lg); background: var(--ds-surface);
-  border: 1px solid var(--ds-border);
+  flex: 0 0 auto;
+  margin-top: 0; padding: 9px 0 calc(9px + var(--safe-bottom));
+  position: relative; bottom: auto;
+  border-radius: 0; background: var(--bg);
+  border: 0; border-top: 1px solid var(--ds-border);
 }
 .chat-attach, .chat-send {
   flex-shrink: 0; width: 40px; min-height: 40px; height: 40px;

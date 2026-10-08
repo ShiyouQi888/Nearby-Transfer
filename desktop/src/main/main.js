@@ -273,6 +273,8 @@ function startServices() {
     } else {
       pushToRenderer('ltp:event', { ev, payload });
     }
+    // 用户要求收到聊天消息时直接进入对应会话；若窗口在托盘/后台，也一并唤起。
+    if (ev === 'chat:message' && payload && payload.message && payload.message.dir === 'in') showMainWindow();
     if (ev === 'trust:changed') { STORE.trusted = payload.trusted; saveStore(); }
     // 聊天来源的传输：把进度/完成回写到对应聊天消息，让气泡内的进度条动起来
     if (ev === 'transfer:progress' && chatStore && payload) {

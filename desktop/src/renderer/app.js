@@ -141,11 +141,29 @@ function notify(title, body) {
 
 // ── 导航 ─────────────────────────────────────────────
 
+const sidebar = document.querySelector('.body');
+const sidebarToggle = $('btnSidebarToggle');
+if (sidebar && sidebarToggle) {
+  const setSidebarCollapsed = (collapsed) => {
+    sidebar.classList.toggle('sidebar-collapsed', collapsed);
+    sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+    const label = collapsed ? '展开侧栏' : '折叠侧栏';
+    sidebarToggle.setAttribute('aria-label', window.LTP_I18N?.t(label) || label);
+    sidebarToggle.title = window.LTP_I18N?.t(label) || label;
+    localStorage.setItem('ltp.sidebarCollapsed', collapsed ? '1' : '0');
+  };
+  setSidebarCollapsed(localStorage.getItem('ltp.sidebarCollapsed') === '1');
+  sidebarToggle.addEventListener('click', () => {
+    setSidebarCollapsed(!sidebar.classList.contains('sidebar-collapsed'));
+  });
+}
+
 document.querySelectorAll('.nav-item').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
     const tab = btn.dataset.tab;
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === 'tab-' + tab));
+    document.querySelector('.content').classList.toggle('chat-active', tab === 'chat');
     if (tab === 'devices') refreshQr();
     if (tab === 'trusted') renderTrusted();
     if (tab === 'history') renderHistory();
@@ -458,6 +476,7 @@ async function sendToDevice(dev) {
 function goto(tab) {
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === 'tab-' + tab));
+  document.querySelector('.content').classList.toggle('chat-active', tab === 'chat');
 }
 
 // ── 网段扫描 ─────────────────────────────────────────
@@ -873,8 +892,10 @@ function showOffer(offer) {
   S.pendingOffer = offer;
   const devName = (offer.device && offer.device.name) || '未知设备';
   S.received = [{ name: `${offer.files.length} 个待接收文件`, from: devName, size: offer.totalBytes || 0, status: '等待确认', at: Date.now() }, ...(S.received || [])];
-  goto('received');
+  if (offer.origin !== 'chat') goto('received');
   $('offerFrom').textContent = `来自 ${devName}（${(offer.device && offer.device.type) === 'mobile' ? '手机' : '电脑'}）`;
+  $('offerIp').textContent = (offer.device && offer.device.ip) || offer.remoteAddress || '未知';
+  $('offerPort').textContent = `接收端口 ${offer.port || 53317}`;
 
   $('offerFiles').innerHTML = offer.files.slice(0, 60).map((f) => `
     <div class="offer-file">
@@ -943,6 +964,7 @@ $('btnRejectOffer').addEventListener('click', async () => {
 const CHAT = {
   chats: [],            // 会话摘要
   activeId: '',         // 当前打开的 peerId
+  peerType: 'desktop',  // 对端设备类型，用于头像与会话识别
   messages: new Map(),  // peerId -> message[]
   sending: false,
 };
@@ -972,6 +994,10 @@ function chatSubtitle(c) {
   return prefix + (lm.text || '');
 }
 
+function chatPeerIsMobile(peer) {
+  return !!(peer && peer.type === 'mobile') || /^mobile[-_]/i.test((peer && peer.deviceId) || '');
+}
+
 async function loadChats() {
   CHAT.chats = (await api.getChats()) || [];
   renderChatList();
@@ -993,7 +1019,7 @@ function renderChatList() {
   $('chatListEmpty').hidden = items.length > 0;
   list.innerHTML = items.map((c) => `
     <li class="chat-item${c.peerId === CHAT.activeId ? ' active' : ''}" data-peer="${esc(c.peerId)}">
-      <div class="chat-item-ic">${window.Icons.icon(c.peer && c.peer.type === 'mobile' ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}</div>
+      <div class="chat-item-ic">${window.Icons.icon(chatPeerIsMobile(c.peer) ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}</div>
       <div class="chat-item-main">
         <div class="chat-item-name">${esc((c.peer && c.peer.name) || c.peerId)}</div>
         <div class="chat-item-sub">${esc(chatSubtitle(c))}</div>
@@ -1029,8 +1055,9 @@ async function openChat(peerId) {
   const r = await api.getChatMessages(peerId, { limit: 300 });
   CHAT.messages.set(peerId, (r && r.messages) || []);
   const chat = (CHAT.chats || []).find((c) => c.peerId === peerId);
-  const peer = chat ? chat.peer : (getAvailableDevices().find((d) => d.deviceId === peerId) || {});
-  const isMobile = peer.type === 'mobile';
+  const peer = getAvailableDevices().find((d) => d.deviceId === peerId) || (chat && chat.peer) || { deviceId: peerId };
+  const isMobile = chatPeerIsMobile(peer);
+  CHAT.peerType = isMobile ? 'mobile' : 'desktop';
   $('chatHead').hidden = false;
   $('chatEmpty').hidden = true;
   $('chatComposer').hidden = false;
@@ -1078,10 +1105,11 @@ function renderTimeline() {
 /** 单条消息 HTML */
 function messageHtml(m) {
   const out = m.dir === 'out';
+  const avatarType = out ? 'desktop' : (CHAT.peerType === 'mobile' ? 'mobile' : 'desktop');
   const body = m.kind === 'file' ? fileCardHtml(m) : `<div class="bubble">${esc(m.text)}</div>`;
   return `
     <div class="msg${out ? ' out' : ''}" data-msgid="${esc(m.msgId)}">
-      <div class="msg-avatar">${window.Icons.icon(out ? 'desktop' : 'mobile', { size: 15, sw: 1.7 })}</div>
+      <div class="msg-avatar" role="img" aria-label="${avatarType === 'mobile' ? '手机' : '电脑'}">${window.Icons.icon(avatarType, { size: 16, sw: 1.7 })}</div>
       <div class="msg-body">
         ${body}
         <div class="msg-meta">
@@ -1106,7 +1134,7 @@ function fileCardHtml(m) {
   const first = files[0] || {};
   const label = files.length > 1 ? `${files.length} 个文件` : (first.name || '文件');
   const isImg = /\.(jpe?g|png|gif|webp|bmp)$/i.test(first.name || '');
-  const path = first.path || (att.savePaths && att.savePaths[0]) || '';
+  const path = first.path || (att.localPaths && att.localPaths[0]) || (att.savePaths && att.savePaths[0]) || '';
   const done = m.status === 'done';
   const failed = m.status === 'failed' || m.status === 'rejected' || m.status === 'cancelled';
   return `
@@ -1209,7 +1237,10 @@ function autoGrowInput() {
   const el = $('chatInput');
   if (!el) return;
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 130) + 'px';
+  const maxHeight = 130;
+  const contentHeight = el.scrollHeight;
+  el.style.height = Math.min(contentHeight, maxHeight) + 'px';
+  el.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
 }
 
 /**
@@ -1400,14 +1431,17 @@ async function handleEvent(ev, payload) {
     case 'chat:message': {
       const peerId = payload.peerId;
       upsertChatMessage(peerId, payload.message);
+      if (payload.message.dir === 'in') {
+        goto('chat');
+        await loadChats();
+        await openChat(peerId);
+        break;
+      }
       const onChatPage = document.querySelector('.nav-item.active')?.dataset.tab === 'chat';
       if (peerId === CHAT.activeId && onChatPage) {
         appendMessageEl(payload.message);
         scrollChatToEnd();
         api.markChatRead(peerId);
-      } else if (payload.message.dir === 'in') {
-        toast(`新消息来自 ${(payload.peer && payload.peer.name) || peerId}`, 'ok');
-        notify('收到新消息', (payload.peer && payload.peer.name) || peerId);
       }
       loadChats();
       break;

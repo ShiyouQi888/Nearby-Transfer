@@ -32,14 +32,35 @@ import java.util.concurrent.Executors;
 
 /** Pure Android LTP/1 client. No WebView or Capacitor runtime is required. */
 final class NativeClient {
-    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onConnectionDetails(String serverName, String serverId, String token, String host) {} default void onRejected(String reason) {} default void onProgress(int percent, boolean receiving) { onProgress(percent); } default void onTransferFinished(boolean incoming, String label, boolean success) {} default void onSendWaiting(List<Uri> files) {} default void onSendAccepted(List<Uri> files) {} default void onSendFailed(List<Uri> files, String error) {} default void onSendRejected(List<Uri> files) {} default void onIncomingOffer(String label) {} default void onIncomingOffer(String label, String deviceName, String ip) { onIncomingOffer(label); } }
+    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onConnectionDetails(String serverName, String serverId, String token, String host) {} default void onRejected(String reason) {} default void onProgress(int percent, boolean receiving) { onProgress(percent); } default void onTransferFinished(boolean incoming, String label, boolean success) {} default void onSendWaiting(List<Uri> files) {} default void onSendAccepted(List<Uri> files) {} default void onSendFailed(List<Uri> files, String error) {} default void onSendRejected(List<Uri> files) {} default void onIncomingOffer(String label) {} default void onIncomingOffer(String label, String deviceName, String ip) { onIncomingOffer(label); }
+        /**
+         * 收到对端发来的聊天消息（文本或文件）。
+         * @param fromSelf 留空/未使用；消息一定是「对方发来的」
+         */
+        default void onChatMessage(String msgId, long ts, String text, String fileName, long fileSize, String transferId) {}
+        /** 自己发出的消息被对端确认送达 */
+        default void onChatAck(String msgId, long ts) {}
+        /** 对端已读到某个时间点之前的消息 */
+        default void onChatRead(long upToTs) {}
+        /** 聊天里发文件：接收方确认接收（含静默自动接收） */
+        default void onChatFileAccepted(String transferId) {}
+        /** 聊天里发文件：接收方拒绝 */
+        default void onChatFileRejected(String transferId) {}
+        default void onChatFileProgress(String transferId, int percent) {}
+        default void onChatFileFinished(String transferId, boolean incoming, boolean success, Uri uri) {}
+    }
     static final int PORT = 53317;
     static final int CHUNK_SIZE = 256 * 1024;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService transferIo = Executors.newSingleThreadExecutor();
+    private final ExecutorService chatIo = Executors.newSingleThreadExecutor();
     private final Listener listener; private final String deviceId; private final String deviceName; private final boolean english;
     private ContentResolver resolver; private List<FileRef> pendingFiles = new ArrayList<>(); private String pendingTransferId; private List<Uri> pendingSendUris = new ArrayList<>();
-    private Socket socket; private OutputStream output; private volatile boolean closed; private int seq;
+    // socket / output 必须 volatile：连接由 IO 线程建立并赋值，
+    // 而聊天消息是从 UI 主线程写出的（用户点「发送」）。
+    // 不加 volatile 会读到旧值（null 或上一会话的流），
+    // 表现为「发出去了但对方永远收不到」——正是这个 bug 的根因。
+    private volatile Socket socket; private volatile OutputStream output; private volatile boolean closed; private int seq;
     private volatile boolean connected;
     private String remoteDeviceName = "电脑";
     private String remoteIp = "未知";
@@ -48,6 +69,12 @@ final class NativeClient {
     private final java.util.Map<String, ReceiveFile> receiving = new java.util.concurrent.ConcurrentHashMap<>();
     private JSONObject pendingIncomingOffer;
     private String pendingIncomingLabel = "";
+    /** 聊天专用：本端已授权「本会话静默接收」的对端 */
+    private boolean chatSilentAccept = false;
+    /** 聊天文件消息的 transferId -> 归属的 chat msgId，用于把传输进度挂回聊天气泡 */
+    private final java.util.Map<String, String> chatTransferMsgIds = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 正在等待「聊天文件」接收确认的 transferId 集合（这些走静默/自动接收，不进传输页确认） */
+    private final java.util.Set<String> chatOfferTransferIds = new java.util.HashSet<>();
 
     NativeClient(String deviceId, String deviceName, Listener listener, boolean english) { this.deviceId = deviceId; this.deviceName = deviceName; this.listener = listener; this.english = english; }
 
@@ -102,13 +129,18 @@ final class NativeClient {
 
     private void handleMessage(String line) {
         if (line.isEmpty()) return;
+        android.util.Log.d("LTP-TRACE", "in  " + line.substring(0, Math.min(160, line.length())));
+        android.util.Log.d("LTP-TRACE", "in  " + line.substring(0, Math.min(200, line.length())));
         try { JSONObject msg = new JSONObject(line); String type = msg.optString("type");
             if ("hello_ack".equals(type)) { if (msg.optBoolean("accepted", false)) { connected = true; JSONObject server = msg.optJSONObject("server"); remoteDeviceName = server == null ? "电脑" : server.optString("name", "电脑"); listener.onConnected(remoteDeviceName); listener.onConnectionDetails(remoteDeviceName, server == null ? "" : server.optString("deviceId", ""), msg.optString("token", ""), remoteIp); } else listener.onError(reason(msg.optString("reason"))); }
             else if ("send_offer".equals(type)) prepareIncomingOffer(msg);
-            else if ("send_reject".equals(type)) { if (pendingTransferId != null && pendingTransferId.equals(msg.optString("transferId"))) { listener.onTransferFinished(false, pendingFileNames, false); listener.onSendRejected(new ArrayList<>(pendingSendUris)); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = ""; listener.onRejected(msg.optString("reason", "user_denied")); } }
+            else if ("send_reject".equals(type)) { if (pendingTransferId != null && pendingTransferId.equals(msg.optString("transferId"))) { String rejectedId = pendingTransferId; listener.onTransferFinished(false, pendingFileNames, false); if (chatTransferMsgIds.containsKey(rejectedId)) listener.onChatFileFinished(rejectedId, false, false, null); listener.onSendRejected(new ArrayList<>(pendingSendUris)); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = ""; listener.onRejected(msg.optString("reason", "user_denied")); } }
             else if ("complete".equals(type)) finishIncomingFile(msg.optString("fileId"), msg.optString("path", ""));
             else if ("send_accept".equals(type)) transferIo.execute(() -> { try { sendPendingFiles(msg); } catch (Exception e) { failPendingSend(e); } });
             else if ("ping".equals(type)) sendJson(message("pong"));
+            else if ("chat_send".equals(type)) handleChatSend(msg);
+            else if ("chat_ack".equals(type)) listener.onChatAck(msg.optString("msgId", ""), msg.optLong("ts", 0));
+            else if ("chat_read".equals(type)) listener.onChatRead(msg.optLong("upToTs", 0));
             else if ("error".equals(type)) listener.onError(msg.optString("message", "电脑端返回错误"));
         } catch (Exception ignored) { }
     }
@@ -133,6 +165,21 @@ final class NativeClient {
 
     private synchronized void prepareIncomingOffer(JSONObject msg) throws Exception {
         String transferId = msg.optString("transferId"); JSONArray files = msg.optJSONArray("files"); if (files == null || files.length() == 0) return;
+
+        // 聊天里发来的文件（origin=chat）：记录归属，并在已授权时静默接收，
+        // 不再弹传输页的确认卡片——否则每条文件消息都会打断对话。
+        if ("chat".equals(msg.optString("origin", ""))) {
+            String chatMsgId = msg.optString("chatId", "");
+            if (!chatMsgId.isEmpty()) chatTransferMsgIds.put(transferId, chatMsgId);
+            long totalBytes = msg.optLong("totalBytes", 0);
+            if (chatSilentAccept && files.length() <= CHAT_SILENT_MAX_FILES && totalBytes <= CHAT_SILENT_MAX_BYTES) {
+                chatOfferTransferIds.add(transferId);
+                final JSONObject auto = msg;
+                transferIo.execute(() -> { try { acceptIncomingOfferNow(auto); } catch (Exception e) { listener.onError("自动接收失败：" + (e.getMessage() == null ? "无法创建文件" : e.getMessage())); } });
+                return;
+            }
+        }
+
         pendingIncomingOffer = msg;
         StringBuilder names = new StringBuilder();
         int shown = Math.min(files.length(), 20);
@@ -142,18 +189,138 @@ final class NativeClient {
         String label = (english ? files.length() + " file(s) · " : files.length() + " 个文件 · ") + size + names; pendingIncomingLabel = label; listener.onIncomingOffer(label, remoteDeviceName, remoteIp);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // 聊天（Chat over LTP/1）
+    // ─────────────────────────────────────────────────────────────
+
+    /** 允许/禁止「本会话静默接收文件」。接收方在聊天页确认一次后置为 true。 */
+    void setChatSilentAccept(boolean allowed) { chatSilentAccept = allowed; }
+    boolean isChatSilentAccept() { return chatSilentAccept; }
+
+    /** 该 transferId 是否属于聊天文件（用于把传输进度挂回聊天气泡）。 */
+    String chatMsgIdForTransfer(String transferId) { return transferId == null ? null : chatTransferMsgIds.get(transferId); }
+    boolean isChatTransfer(String transferId) { return transferId == null ? false : chatTransferMsgIds.containsKey(transferId); }
+
+    /**
+     * 发送一条聊天文本消息。返回本端生成的 msgId，供 UI 立即上屏。
+     *
+     * 注意：这里同步写出，不要改回 io.execute(...) 异步。
+     * UI 依赖返回值立刻上屏（msgId 为 null 就不显示气泡），
+     * 异步化会让「已发送」气泡的时序变得不可预测。
+     * 跨线程可见性已由 socket/output 的 volatile 保证。
+     */
+    String sendChatText(String text) {
+        if (text == null) return null;
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) return null;
+        if (trimmed.length() > CHAT_TEXT_MAX) { listener.onError(english ? "Message too long (max " + CHAT_TEXT_MAX + ")" : "消息过长（最多 " + CHAT_TEXT_MAX + " 字）"); return null; }
+        String msgId = makeMsgId();
+        try {
+            JSONObject payload = message("chat_send").put("msgId", msgId).put("kind", "text").put("text", trimmed);
+            chatIo.execute(() -> {
+                try { sendJson(payload); }
+                catch (Exception e) { listener.onError(english ? "Failed to send message" : "消息发送失败"); }
+            });
+        } catch (Exception e) { listener.onError(english ? "Failed to send message" : "消息发送失败"); return null; }
+        return msgId;
+    }
+
+    /**
+     * 发送一条聊天文件消息：先发 chat_send（kind=file）建立气泡，
+     * 再走标准 send_offer（origin=chat）完成传输。
+     */
+    String sendChatFile(ContentResolver resolver, Uri uri, String transferId) {
+        if (resolver == null || uri == null) return null;
+        String msgId = makeMsgId();
+        if (transferId == null || transferId.isEmpty()) transferId = "t_a_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        final String chatTransferId = transferId;
+        transferIo.execute(() -> {
+            try {
+                this.resolver = resolver;
+                FileRef ref = inspect(resolver, uri, "f_1");
+                if (!ref.sizeKnown) ref.size = measureSize(resolver, ref.uri);
+                JSONArray files = new JSONArray();
+                files.put(new JSONObject().put("fileId", ref.id).put("name", ref.name).put("size", ref.size).put("mime", ref.mime)
+                        .put("relPath", ref.name).put("isDir", false).put("mtime", System.currentTimeMillis())
+                        .put("chunkSize", CHUNK_SIZE).put("sha256", sha256(resolver, ref.uri)));
+                pendingFiles.clear(); pendingFiles.add(ref);
+                pendingSendUris = new ArrayList<>(); pendingSendUris.add(uri);
+                pendingFileNames = ref.name; pendingTransferId = chatTransferId;
+                chatTransferMsgIds.put(chatTransferId, msgId);
+
+                sendJson(message("chat_send").put("msgId", msgId).put("kind", "file").put("transferId", chatTransferId)
+                        .put("fileName", ref.name).put("fileSize", ref.size).put("mime", ref.mime));
+                sendJson(message("send_offer").put("transferId", chatTransferId).put("origin", "chat").put("chatId", msgId)
+                        .put("files", files).put("totalBytes", ref.size));
+                listener.onProgress(0); listener.onChatFileProgress(chatTransferId, 0);
+            } catch (Exception e) { listener.onError(english ? "Failed to send file" : "文件发送失败"); }
+        });
+        return msgId;
+    }
+
+    /** 回复 chat_read（对端消息我都看过了）。 */
+    void sendChatRead(long upToTs) {
+        try {
+            JSONObject payload = message("chat_read").put("upToTs", upToTs);
+            chatIo.execute(() -> { try { sendJson(payload); } catch (Exception ignored) { } });
+        } catch (Exception ignored) { }
+    }
+
+    private void handleChatSend(JSONObject msg) {
+        String msgId = msg.optString("msgId", "");
+        String kind = msg.optString("kind", "text");
+        String text = msg.optString("text", "");
+        String fileName = msg.optString("fileName", "");
+        long fileSize = msg.optLong("fileSize", 0);
+        String transferId = msg.optString("transferId", "");
+        JSONObject attachment = msg.optJSONObject("attachment");
+        if (attachment != null) {
+            if (transferId.isEmpty()) transferId = attachment.optString("transferId", "");
+            JSONArray files = attachment.optJSONArray("files");
+            JSONObject first = files == null ? null : files.optJSONObject(0);
+            if (first != null) { if (fileName.isEmpty()) fileName = first.optString("name", ""); if (fileSize <= 0) fileSize = first.optLong("size", 0); }
+        }
+        if (!transferId.isEmpty() && !msgId.isEmpty()) chatTransferMsgIds.put(transferId, msgId);
+        // 无论是否重复，都要回 ack——对端靠它把状态从「已发送」推进到「已送达」。
+        try { sendJson(message("chat_ack").put("msgId", msgId).put("ts", msg.optLong("ts", System.currentTimeMillis()))); } catch (Exception ignored) { }
+        listener.onChatMessage(msgId, msg.optLong("ts", System.currentTimeMillis()), text, fileName, fileSize, transferId);
+    }
+
+    private String makeMsgId() {
+        String who = deviceId == null ? "mob" : deviceId.replaceAll("^[a-z]+-", "");
+        if (who.length() > 6) who = who.substring(0, 6);
+        return "m_" + who + "_" + System.currentTimeMillis() + "_" + Integer.toHexString(new java.util.Random().nextInt(0xffff));
+    }
+
+    /** 聊天静默接收阈值：单次不超过 20 个文件且不超过 500MB。 */
+    static final int CHAT_SILENT_MAX_FILES = 20;
+    static final long CHAT_SILENT_MAX_BYTES = 500L * 1024 * 1024;
+    static final int CHAT_TEXT_MAX = 4000;
+
     void acceptIncomingOffer() {
         final JSONObject offer;
         synchronized (this) { offer = pendingIncomingOffer; pendingIncomingOffer = null; }
         if (offer == null) return;
-        transferIo.execute(() -> { try { acceptIncomingOfferNow(offer); } catch (Exception e) { listener.onError("接收准备失败：" + (e.getMessage() == null ? "无法创建文件" : e.getMessage())); } });
+        final String transferId = offer.optString("transferId");
+        final JSONArray files = offer.optJSONArray("files");
+        transferIo.execute(() -> {
+            try {
+                acceptIncomingOfferNow(offer);
+                if (!transferId.isEmpty() && chatTransferMsgIds.containsKey(transferId)) listener.onChatFileAccepted(transferId);
+            } catch (Exception e) { listener.onError("接收准备失败：" + (e.getMessage() == null ? "无法创建文件" : e.getMessage())); }
+        });
     }
 
     void rejectIncomingOffer() {
         final JSONObject offer;
         synchronized (this) { offer = pendingIncomingOffer; pendingIncomingOffer = null; }
         if (offer == null) return;
-        try { sendJson(message("send_reject").put("transferId", offer.optString("transferId")).put("reason", "user_denied")); listener.onTransferFinished(true, pendingIncomingLabel, false); pendingIncomingLabel = ""; } catch (Exception e) { listener.onError("拒绝接收失败"); }
+        final String transferId = offer.optString("transferId");
+        try {
+            sendJson(message("send_reject").put("transferId", transferId).put("reason", "user_denied"));
+            listener.onTransferFinished(true, pendingIncomingLabel, false); pendingIncomingLabel = "";
+            if (!transferId.isEmpty() && chatTransferMsgIds.containsKey(transferId)) listener.onChatFileRejected(transferId);
+        } catch (Exception e) { listener.onError("拒绝接收失败"); }
     }
 
     private void acceptIncomingOfferNow(JSONObject msg) throws Exception {
@@ -174,7 +341,7 @@ final class NativeClient {
         return new ReceiveFile(transferId, id, size, name, mime, sha256, Uri.fromFile(part), new FileOutputStream(part, true), received);
     }
 
-    private void receiveChunk(String fileId, int frameSeq, byte[] payload) throws Exception { ReceiveFile f = receiving.get(fileId); if (f == null) return; f.output.write(payload); f.received += payload.length; f.ackedSeq = frameSeq; f.chunksSinceAck++; if (f.chunksSinceAck >= 4) { sendJson(message("chunk_ack").put("transferId", f.transferId).put("fileId", fileId).put("ackedSeq", f.ackedSeq).put("receivedBytes", f.received)); f.chunksSinceAck = 0; } if (f.size > 0) listener.onProgress((int) Math.min(99, f.received * 100L / f.size), true); }
+    private void receiveChunk(String fileId, int frameSeq, byte[] payload) throws Exception { ReceiveFile f = receiving.get(fileId); if (f == null) return; f.output.write(payload); f.received += payload.length; f.ackedSeq = frameSeq; f.chunksSinceAck++; if (f.chunksSinceAck >= 4) { sendJson(message("chunk_ack").put("transferId", f.transferId).put("fileId", fileId).put("ackedSeq", f.ackedSeq).put("receivedBytes", f.received)); f.chunksSinceAck = 0; } if (f.size > 0) { int percent = (int) Math.min(99, f.received * 100L / f.size); listener.onProgress(percent, true); if (chatTransferMsgIds.containsKey(f.transferId)) listener.onChatFileProgress(f.transferId, percent); } }
 
     private void finishIncomingFile(String fileId, String path) throws Exception {
         ReceiveFile f = receiving.remove(fileId);
@@ -184,6 +351,7 @@ final class NativeClient {
         if (f.received != f.size) {
             listener.onError(english ? "Received file is incomplete; reconnect and accept again to resume" : "文件尚未接收完整；重新连接并再次接收即可续传");
             listener.onTransferFinished(true, f.name, false);
+            if (chatTransferMsgIds.containsKey(f.transferId)) listener.onChatFileFinished(f.transferId, true, false, null);
             return;
         }
         if (!f.sha256.isEmpty()) {
@@ -193,12 +361,14 @@ final class NativeClient {
                     part.delete();
                     listener.onError(english ? "File verification failed; please resend the file" : "文件校验失败，请重新发送");
                     listener.onTransferFinished(true, f.name, false);
+                    if (chatTransferMsgIds.containsKey(f.transferId)) listener.onChatFileFinished(f.transferId, true, false, null);
                     return;
                 }
             } catch (Exception verificationError) {
                 part.delete();
                 listener.onError(english ? "Unable to verify the received file" : "无法验证接收文件完整性");
                 listener.onTransferFinished(true, f.name, false);
+                if (chatTransferMsgIds.containsKey(f.transferId)) listener.onChatFileFinished(f.transferId, true, false, null);
                 return;
             }
         }
@@ -208,6 +378,7 @@ final class NativeClient {
         part.delete();
         listener.onProgress(100, true);
         listener.onTransferFinished(true, f.name, true);
+        if (chatTransferMsgIds.containsKey(f.transferId)) listener.onChatFileFinished(f.transferId, true, true, destination);
     }
 
     private Uri publishReceivedFile(File part, String name, String mime) throws Exception {
@@ -251,14 +422,20 @@ final class NativeClient {
             completed += sendFile(f, start, total, completed);
             sendJson(message("complete").put("transferId", pendingTransferId).put("fileId", f.id).put("path", f.name).put("size", f.size));
         }
-        listener.onProgress(100); listener.onTransferFinished(false, pendingFileNames, true); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = "";
+        String finishedTransferId = pendingTransferId;
+        Uri sourceUri = pendingSendUris.isEmpty() ? null : pendingSendUris.get(0);
+        listener.onProgress(100); listener.onTransferFinished(false, pendingFileNames, true);
+        if (finishedTransferId != null && chatTransferMsgIds.containsKey(finishedTransferId)) listener.onChatFileFinished(finishedTransferId, false, true, sourceUri);
+        pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = "";
     }
 
     private void failPendingSend(Exception error) {
         String message = error.getMessage() == null ? "发送失败" : error.getMessage();
+        String failedTransferId = pendingTransferId;
         List<Uri> failed = new ArrayList<>(pendingSendUris);
         if (!failed.isEmpty()) listener.onSendFailed(failed, message);
         if (!pendingFileNames.isEmpty()) listener.onTransferFinished(false, pendingFileNames, false);
+        if (failedTransferId != null && chatTransferMsgIds.containsKey(failedTransferId)) listener.onChatFileFinished(failedTransferId, false, false, null);
         pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = "";
         listener.onError(message);
     }
@@ -268,27 +445,37 @@ final class NativeClient {
             if (input == null) throw new IOException("无法读取文件：" + file.name);
             long skipped = 0; while (skipped < start) { long n = input.skip(start - skipped); if (n <= 0) break; skipped += n; }
             byte[] chunk = new byte[CHUNK_SIZE]; int seq = (int) (start / CHUNK_SIZE); long sent = start; int count;
-            while (!closed && (count = readChunk(input, chunk)) > 0) { sendBinary(encodeFrame(file.id, seq++, chunk, count)); sent += count; listener.onProgress((int) Math.min(99, ((completed + sent) * 100L) / Math.max(1, total))); }
+            while (!closed && (count = readChunk(input, chunk)) > 0) { sendBinary(encodeFrame(file.id, seq++, chunk, count)); sent += count; int percent = (int) Math.min(99, ((completed + sent) * 100L) / Math.max(1, total)); listener.onProgress(percent); if (pendingTransferId != null && chatTransferMsgIds.containsKey(pendingTransferId)) listener.onChatFileProgress(pendingTransferId, percent); }
             return sent;
         }
     }
 
     private static int readChunk(InputStream input, byte[] buffer) throws IOException { int total = 0, n; while (total < buffer.length && (n = input.read(buffer, total, buffer.length - total)) > 0) total += n; return total; }
-    private synchronized void sendBinary(byte[] bytes) throws IOException { output.write(bytes); output.flush(); }
+    private synchronized void sendBinary(byte[] bytes) throws IOException { sendRaw(bytes); }
+
+    /** 统一的写出出口：先校验流可用，避免「静默写进空流」。 */
+    private void sendRaw(byte[] bytes) throws IOException {
+        OutputStream out = output;
+        if (out == null || socket == null || socket.isClosed() || !socket.isConnected()) {
+            throw new IOException(english ? "Not connected" : "尚未连接到电脑");
+        }
+        out.write(bytes);
+        out.flush();
+    }
     private static byte[] encodeFrame(String fileId, int seq, byte[] payload, int length) { byte[] id = fileId.getBytes(StandardCharsets.UTF_8); byte[] frame = new byte[14 + id.length + length]; frame[0] = 'L'; frame[1] = 'T'; frame[2] = 'P'; frame[3] = 'C'; frame[4] = (byte) (id.length >>> 8); frame[5] = (byte) id.length; System.arraycopy(id, 0, frame, 6, id.length); int o = 6 + id.length; frame[o] = (byte) (seq >>> 24); frame[o + 1] = (byte) (seq >>> 16); frame[o + 2] = (byte) (seq >>> 8); frame[o + 3] = (byte) seq; frame[o + 4] = (byte) (length >>> 24); frame[o + 5] = (byte) (length >>> 16); frame[o + 6] = (byte) (length >>> 8); frame[o + 7] = (byte) length; System.arraycopy(payload, 0, frame, o + 8, length); return frame; }
 
     private FileRef inspect(ContentResolver resolver, Uri uri, String id) throws Exception { String name = "文件"; long size = 0; boolean sizeKnown = false; try (Cursor cursor = resolver.query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) { if (cursor != null && cursor.moveToFirst()) { name = cursor.getString(0) == null ? name : cursor.getString(0); if (!cursor.isNull(1)) { size = cursor.getLong(1); sizeKnown = true; } } } String mime = resolver.getType(uri); return new FileRef(id, uri, name, size, sizeKnown, mime == null ? "application/octet-stream" : mime); }
     private static long measureSize(ContentResolver resolver, Uri uri) throws IOException { try (InputStream input = resolver.openInputStream(uri)) { if (input == null) throw new IOException("无法读取文件"); byte[] buffer = new byte[64 * 1024]; long size = 0; int count; while ((count = input.read(buffer)) != -1) size += count; return size; } }
     private static String sha256(ContentResolver resolver, Uri uri) throws Exception { java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256"); try (InputStream input = resolver.openInputStream(uri)) { if (input == null) throw new IOException("无法读取文件"); byte[] buffer = new byte[64 * 1024]; int count; while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count); } StringBuilder result = new StringBuilder(); for (byte b : digest.digest()) result.append(String.format(java.util.Locale.ROOT, "%02x", b & 255)); return result.toString(); }
     private JSONObject message(String type) throws Exception { return new JSONObject().put("v", 1).put("type", type).put("seq", ++seq).put("ts", System.currentTimeMillis()).put("deviceId", deviceId); }
-    private synchronized void sendJson(JSONObject json) throws IOException { output.write((json.toString() + "\n").getBytes(StandardCharsets.UTF_8)); output.flush(); }
+    private synchronized void sendJson(JSONObject json) throws IOException { android.util.Log.d("LTP-TRACE", "out " + json.optString("type")); sendRaw((json.toString() + "\n").getBytes(StandardCharsets.UTF_8)); }
     private void failInterruptedTransfers() {
         if (!pendingFiles.isEmpty()) { listener.onTransferFinished(false, pendingFileNames, false); pendingFiles.clear(); pendingTransferId = null; pendingFileNames = ""; }
         for (ReceiveFile f : new ArrayList<>(receiving.values())) { try { if (f.output != null) f.output.close(); } catch (IOException ignored) { } listener.onTransferFinished(true, f.name, false); }
         receiving.clear(); pendingIncomingOffer = null; pendingIncomingLabel = "";
     }
 
-    void close() { closed = true; connected = false; try { if (socket != null) socket.close(); } catch (IOException ignored) { } io.shutdownNow(); transferIo.shutdownNow(); failInterruptedTransfers(); }
+    void close() { android.util.Log.d("LTP-TRACE", "close() called, stack=" + android.util.Log.getStackTraceString(new Throwable()).substring(0, Math.min(600, android.util.Log.getStackTraceString(new Throwable()).length()))); closed = true; connected = false; try { if (socket != null) socket.close(); } catch (IOException ignored) { } io.shutdownNow(); transferIo.shutdownNow(); chatIo.shutdownNow(); failInterruptedTransfers(); }
     private String reason(String value) { if ("need_pair".equals(value)) return english ? "Device is not paired. Enter the pairing code on the computer." : "设备未配对，请在电脑端输入匹配码或扫码配对"; if ("bad_token".equals(value)) return english ? "Pairing token expired. Please pair again." : "匹配凭证已失效，请重新配对"; if ("rejected".equals(value)) return english ? "The computer rejected the connection." : "电脑端拒绝了连接"; return english ? "Connection rejected (" + value + ")" : "连接被拒绝（" + value + "）"; }
     private static final class FileRef { final String id; final Uri uri; final String name, mime; long size; final boolean sizeKnown; FileRef(String id, Uri uri, String name, long size, boolean sizeKnown, String mime) { this.id = id; this.uri = uri; this.name = name; this.size = size; this.sizeKnown = sizeKnown; this.mime = mime; } }
     private static final class JSONObjectAuth { final String mode, code, token; JSONObjectAuth(String mode, String code, String token) { this.mode = mode; this.code = code; this.token = token; } }

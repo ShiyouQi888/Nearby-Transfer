@@ -154,10 +154,11 @@ class ChatStore {
       if (!this._messages.has(peerId)) this._messages.set(peerId, []);
       this._saveIndex();
       this.onChange({ kind: 'chat:new', chat });
-    } else if (peer && peer.name && peer.name !== chat.peer.name) {
-      // 对端改名了，同步一下展示名
-      chat.peer.name = peer.name;
-      this._saveIndex();
+    } else if (peer) {
+      let changed = false;
+      if (peer.name && peer.name !== chat.peer.name) { chat.peer.name = peer.name; changed = true; }
+      if (peer.type && peer.type !== chat.peer.type) { chat.peer.type = peer.type; changed = true; }
+      if (changed) this._saveIndex();
     }
     return chat;
   }
@@ -253,7 +254,7 @@ class ChatStore {
     if (list.length > MESSAGES_PER_CHAT) list.splice(0, list.length - MESSAGES_PER_CHAT);
     this._saveMessages(peerId);
 
-    const chat = this.openChat({ deviceId: peerId, name: message.peerName });
+    const chat = this.openChat({ deviceId: peerId, name: message.peerName, type: message.peerType });
     chat.lastMessage = {
       msgId: rec.msgId,
       kind: rec.kind,

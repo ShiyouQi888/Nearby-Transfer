@@ -40,19 +40,22 @@
   <!-- 主体：左侧导航 + 右侧内容 -->
   <div class="body">
     <nav class="sidenav">
-      <div class="nav-label">连接与设备</div>
-      <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>连接</button>
-      <button class="nav-item" data-tab="chat"><span class="ni" data-icon="chat"></span>聊天<span class="nav-badge" id="chatBadge" hidden></span></button>
-      <button class="nav-item" data-tab="send"><span class="ni" data-icon="send"></span>发送</button>
+      <div class="sidenav-top">
+        <div class="nav-label">连接与设备</div>
+        <button class="sidenav-toggle" id="btnSidebarToggle" type="button" aria-label="折叠侧栏" aria-expanded="true" title="折叠侧栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
+      </div>
+      <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span><span class="nav-text">连接</span></button>
+      <button class="nav-item" data-tab="chat"><span class="ni" data-icon="chat"></span><span class="nav-text">聊天</span><span class="nav-badge" id="chatBadge" hidden></span></button>
+      <button class="nav-item" data-tab="send"><span class="ni" data-icon="send"></span><span class="nav-text">发送</span></button>
       <div class="nav-label">传输中心</div>
-      <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span>传输</button>
-      <button class="nav-item" data-tab="received"><span class="ni" data-icon="inbox"></span>接收</button>
+      <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span><span class="nav-text">传输</span></button>
+      <button class="nav-item" data-tab="received"><span class="ni" data-icon="inbox"></span><span class="nav-text">接收</span></button>
       <div class="nav-label">记录与管理</div>
-      <button class="nav-item" data-tab="history"><span class="ni" data-icon="history"></span>历史</button>
-      <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span>历史设备</button>
+      <button class="nav-item" data-tab="history"><span class="ni" data-icon="history"></span><span class="nav-text">历史</span></button>
+      <button class="nav-item" data-tab="trusted"><span class="ni" data-icon="shield"></span><span class="nav-text">历史设备</span></button>
       <div class="nav-label">软件</div>
-      <button class="nav-item" data-tab="mobile-download"><span class="ni" data-icon="download"></span>手机端下载</button>
-      <button class="nav-item" data-tab="about"><span class="ni" data-icon="info"></span>关于</button>
+      <button class="nav-item" data-tab="mobile-download"><span class="ni" data-icon="download"></span><span class="nav-text">手机端下载</span></button>
+      <button class="nav-item" data-tab="about"><span class="ni" data-icon="info"></span><span class="nav-text">关于</span></button>
 
       <div class="side-foot">
         <div class="side-illust" data-illust="blob"></div>
@@ -500,6 +503,7 @@
         <p id="offerFrom">来自未知设备</p>
       </div>
     </div>
+    <div class="offer-network"><span>发送设备 IP</span><code id="offerIp">未知</code><span class="offer-port" id="offerPort">接收端口 53317</span></div>
     <div class="offer-files" id="offerFiles"></div>
     <div class="offer-summary" id="offerSummary"></div>
     <div class="modal-actions">

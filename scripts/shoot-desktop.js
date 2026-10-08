@@ -19,7 +19,10 @@ const env = {
   NO_SANDBOX: '1',
   LTP_SHOT: '1',
   LTP_SHOT_DIR: OUT,
-  LTP_SHOT_PLAN: 'devices:desktop.png,pair:pair.png,transfers:transfers.png,history:history.png,trusted:trusted.png',
+  // SEQ_CHAT=1 时先注入一段示例会话，再截聊天页（用于检查气泡/文件卡片渲染）
+  LTP_SHOT_SEED_CHAT: process.env.SEQ_CHAT === '1' ? '1' : '0',
+  LTP_SHOT_PLAN: process.env.SHOT_PLAN
+    || 'devices:desktop.png,pair:pair.png,transfers:transfers.png,history:history.png,trusted:trusted.png',
 };
 // 沙箱环境下 ELECTRON_RUN_AS_NODE=1 会让 electron 以纯 Node 模式启动，
 // 必须清除，否则 app/ipcMain 等 API 不可用。

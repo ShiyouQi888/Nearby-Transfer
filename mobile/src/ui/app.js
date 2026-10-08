@@ -13,6 +13,7 @@
 
 import * as P from '@shared/protocol.mjs';
 import { MobileClient } from '../core/client.js';
+import { ChatStore, DELIVERY } from '../core/chat-store.js';
 import { installLanBridge } from '../core/lan-bridge.js';
 import { getCameraPermission, requestCameraPermission } from '../core/permissions.js';
 import { icon, fileIcon } from './icons.js';
@@ -34,7 +35,13 @@ const state = {
   picks: [],                  // 待发送：{ file, meta, reader }
   transfers: new Map(),       // transferId → { id, dir, name, totalBytes, files:Map, startedAt, status, speed, eta }
   scanAbort: null,
+  pane: 'files',              // 当前主面板：'files' | 'chat'
 };
+
+/** 聊天存储（全局单例，跨连接保留历史） */
+const chatStore = new ChatStore();
+/** transferId → { peerId, msgId }，用于把传输进度映射回聊天里的文件气泡 */
+const chatTransferIndex = new Map();
 
 // ─────────────────────────────────────────────────────────────
 // DOM 快捷方法
@@ -131,6 +138,10 @@ async function connectTo(host, port, auth, { pairing = false } = {}) {
   client.addEventListener('cancel', () => toast('对方取消了传输', 'warn'));
   client.addEventListener('closed', () => onClosed());
   client.addEventListener('error', (ev) => toast(ev.detail.message || '发生错误', 'error'));
+  // 聊天
+  client.addEventListener('chat', (ev) => onChatMessage(ev.detail));
+  client.addEventListener('chat_ack', (ev) => onChatAck(ev.detail));
+  client.addEventListener('chat_read', (ev) => onChatRead(ev.detail));
 
   const btn = pairing ? $('btnUseCode') : null;
   if (btn) btn.disabled = true;
@@ -159,6 +170,13 @@ async function connectTo(host, port, auth, { pairing = false } = {}) {
     renderPicks();
     showScreen('main');
     renderConnectionBadge(true);
+
+    // 建立/恢复与该电脑的聊天会话，并回到用户上次停留的面板
+    const chat = ensureChat();
+    if (chat) { CHAT.activeId = chat.peerId; CHAT.messages = chatStore.list(chat.peerId).messages; }
+    renderChatBadge();
+    setPane(state.pane === 'chat' ? 'chat' : 'files');
+
     toast(`已连接到 ${state.server ? state.server.name : host}`, 'ok');
     return true;
   } catch (e) {
@@ -586,6 +604,7 @@ function onSendStart(detail) {
 function onSendDone(detail) {
   const t = state.transfers.get(detail.transferId);
   if (t) { t.status = 'done'; t.endedAt = Date.now(); renderTransfers(); }
+  markChatTransferDone(detail.transferId, true);
   toast('发送完成', 'ok');
 }
 
@@ -624,8 +643,15 @@ function onIncomingOffer(offer) {
 async function acceptOffer() {
   if (!pendingOffer || !state.client) return;
   const offer = pendingOffer;
+  const trust = $('offerTrust') ? $('offerTrust').checked : true;
   $('offerMask').hidden = true;
   pendingOffer = null;
+
+  // 用户勾了「信任该会话」→ 以后该会话的文件静默接收（与电脑端语义一致）
+  if (trust) {
+    const chat = ensureChat();
+    if (chat) chatStore.acceptSession(chat.peerId);
+  }
 
   createTransferCard({
     id: offer.transferId,
@@ -636,6 +662,20 @@ async function acceptOffer() {
     startedAt: Date.now(),
     status: 'active',
   });
+
+  // 若这条 offer 属于聊天里的文件消息，把气泡补上并挂进度
+  if (offer.origin === 'chat' || offer.chatId) {
+    const peerId = chatPeerId();
+    const lastFileMsg = [...chatStore.list(peerId).messages].reverse()
+      .find((m) => m.dir === 'in' && m.kind === 'file' && !m.attachment?.transferId);
+    if (lastFileMsg) {
+      chatStore.updateStatus(peerId, lastFileMsg.msgId, {
+        transferId: offer.transferId,
+        status: 'received',
+      });
+      chatTransferIndex.set(offer.transferId, { peerId, msgId: lastFileMsg.msgId });
+    }
+  }
 
   try {
     await state.client.acceptOffer(offer, storageFactory);
@@ -651,6 +691,397 @@ function rejectOffer() {
   $('offerMask').hidden = true;
   pendingOffer = null;
   toast('已拒绝接收', 'info');
+}
+
+// ─────────────────────────────────────────────────────────────
+// 聊天（Chat over LTP/1）
+//
+// 设计要点（详见 docs/CHAT.md）：
+//   · 文本消息 = 一条 chat_send NDJSON，不经传输层；
+//   · 文件消息 = chat_send（先让气泡出现）+ send_offer（字节走既有分片通道）；
+//   · 去重按 msgId；排序按到达顺序，ts 仅用于展示；
+//   · 未配对设备无法进入聊天（会话本身就是配对后的 TCP 通道）。
+// ─────────────────────────────────────────────────────────────
+
+const CHAT = {
+  activeId: '',        // 当前会话的 peerId（手机上恒为电脑的 deviceId）
+  messages: [],        // 当前会话的消息缓存
+  sending: false,
+};
+
+function chatPeerId() {
+  return (state.server && state.server.deviceId) || 'unknown';
+}
+
+/** 会话需要存在才能收发（首次进入时惰性创建） */
+function ensureChat() {
+  if (!state.server) return null;
+  return chatStore.openChat({
+    deviceId: state.server.deviceId,
+    name: state.server.name,
+    type: state.server.type || 'desktop',
+  });
+}
+
+function chatTime(ts) {
+  const d = new Date(ts || Date.now());
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function chatDayLabel(ts) {
+  const d = new Date(ts || Date.now());
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  if (sameDay) return '今天';
+  const y = new Date(today.getTime() - 86400000);
+  if (d.toDateString() === y.toDateString()) return '昨天';
+  return `${d.getMonth() + 1} 月 ${d.getDate()} 日`;
+}
+
+/** 出站消息状态 → 展示文案 */
+function statusText(st) {
+  return {
+    pending: '未送达',
+    sent: '已发送',
+    delivered: '已送达',
+    read: '已读',
+    sending: '发送中',
+    failed: '发送失败',
+  }[st] || '';
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 用于把 msgId 塞进 querySelector 的属性选择器里 */
+function cssEscape(s) {
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(s));
+  return String(s).replace(/["\\]/g, '\\$&');
+}
+
+/** 单条消息 → DOM 字符串 */
+function messageHtml(m) {
+  const out = m.dir === 'out';
+  const avatar = out
+    ? `<span class="msg-avatar">${icon('mobile', 17, 1.8)}</span>`
+    : `<span class="msg-avatar" style="color:var(--ds-brand-bright)">${icon('desktop', 17, 1.8)}</span>`;
+
+  let inner;
+  if (m.kind === 'file') {
+    inner = fileCardHtml(m);
+  } else {
+    inner = `<div class="bubble">${escapeHtml(m.text)}</div>`;
+  }
+
+  const st = out ? statusText(m.status) : '';
+  const stCls = m.status === 'read' ? ' is-read' : m.status === 'failed' ? ' is-failed' : '';
+  const meta = `
+    <div class="msg-meta">
+      <span>${chatTime(m.ts)}</span>
+      ${st ? `<span class="st${stCls}">${st}</span>` : ''}
+      ${m.status === 'failed' ? `<button class="msg-retry" data-retry="${escapeHtml(m.msgId)}">重发</button>` : ''}
+    </div>`;
+
+  return `<div class="msg ${out ? 'out' : 'in'}" data-msgid="${escapeHtml(m.msgId)}">${avatar}<div class="msg-body">${inner}${meta}</div></div>`;
+}
+
+/** 文件消息气泡：图标 + 名称 + 大小 + 进度条 */
+function fileCardHtml(m) {
+  const att = m.attachment || {};
+  const f = (att.files && att.files[0]) || {};
+  const name = f.name || (att.name || '文件');
+  const size = f.size != null ? f.size : att.size;
+  const t = m.done ? 1 : (m.progress || 0);
+  const pct = Math.round(t * 100);
+  const doneCls = m.done ? ' is-done' : '';
+  const barHidden = (m.dir === 'in' && !m.done && !m.progress) ? ' hidden' : '';
+  return `
+    <div class="file-card">
+      <div class="file-card-head">
+        <span class="file-card-ico">${fileIcon(name, 34)}</span>
+        <span class="file-card-main">
+          <span class="file-card-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+          <span class="file-card-size">${size != null ? P.formatBytes(size) : ''}${m.done ? ' · 已完成' : ''}</span>
+        </span>
+      </div>
+      <div class="file-card-bar${doneCls}"${barHidden}><i style="width:${pct}%"></i></div>
+    </div>`;
+}
+
+/** 重建整个时间线（仅在切换会话/初次加载时调用） */
+function renderTimeline() {
+  const wrap = $('chatTimeline');
+  const empty = $('chatEmpty');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const list = CHAT.messages;
+  if (!list.length) { empty.hidden = false; return; }
+  empty.hidden = true;
+  list.forEach((m) => { wrap.insertAdjacentHTML('beforeend', messageHtml(m)); });
+  scrollChatToEnd();
+}
+
+function scrollChatToEnd() {
+  const wrap = $('chatTimeline');
+  if (!wrap) return;
+  const scroller = wrap.parentElement;   // .pane 才是滚动容器
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+}
+
+/** 增量追加单条（避免整表重建导致滚动跳位） */
+function appendMessageEl(m) {
+  const wrap = $('chatTimeline');
+  if (!wrap) return;
+  $('chatEmpty').hidden = true;
+  wrap.insertAdjacentHTML('beforeend', messageHtml(m));
+  scrollChatToEnd();
+}
+
+/** 就地更新单条（状态 / 进度变化） */
+function updateMessageEl(m) {
+  const wrap = $('chatTimeline');
+  if (!wrap) return;
+  const el = wrap.querySelector(`[data-msgid="${cssEscape(m.msgId)}"]`);
+  if (!el) return;
+  const html = messageHtml(m);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const next = tmp.firstElementChild;
+  if (next) el.replaceWith(next);
+  else el.remove();
+}
+
+/** 把消息 upsert 进缓存 + DOM */
+function upsertChatMessage(peerId, message) {
+  if (peerId !== CHAT.activeId) { renderChatBadge(); return; }
+  const i = CHAT.messages.findIndex((x) => x.msgId === message.msgId);
+  if (i >= 0) {
+    CHAT.messages[i] = { ...CHAT.messages[i], ...message };
+    updateMessageEl(CHAT.messages[i]);
+  } else {
+    CHAT.messages.push(message);
+    appendMessageEl(message);
+  }
+  renderChatBadge();
+}
+
+function renderChatBadge() {
+  const total = chatStore.totalUnread();
+  const badge = $('chatUnreadBadge');
+  if (badge) {
+    badge.hidden = total === 0;
+    badge.textContent = total > 99 ? '99+' : String(total);
+  }
+}
+
+/** 进入聊天面板：加载历史、清未读、上报已读 */
+function openChatPane({ notifyPeer = true } = {}) {
+  const chat = ensureChat();
+  if (!chat) return;
+  CHAT.activeId = chat.peerId;
+  CHAT.messages = chatStore.list(chat.peerId).messages;
+  renderTimeline();
+  chatStore.markLocalRead(chat.peerId);
+  renderChatBadge();
+  if (notifyPeer && state.client && state.client.paired) {
+    state.client.sendChatRead(chat.readUpTo || Date.now());
+  }
+}
+
+// ── 发送 ────────────────────────────────────────────────────
+
+function autoGrowInput() {
+  const ta = $('chatInput');
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(120, ta.scrollHeight) + 'px';
+  $('btnChatSend').disabled = !ta.value.trim();
+}
+
+function sendChatText() {
+  const ta = $('chatInput');
+  const text = (ta.value || '').trim();
+  if (!text || !state.client) return;
+  if (!state.client.paired) { toast('尚未连接到电脑', 'warn'); return; }
+
+  const chat = ensureChat();
+  if (!chat) return;
+  const online = !!state.client.socket;
+  const msgId = P.makeMsgId(state.device.deviceId);
+
+  // 先落本地出站消息（乐观渲染），再交给协议层发送
+  const { message } = chatStore.append(chat.peerId, {
+    msgId, dir: 'out', kind: 'text', text, ts: Date.now(),
+    status: online ? DELIVERY.SENT : DELIVERY.PENDING,
+  });
+  upsertChatMessage(chat.peerId, message);
+
+  const r = state.client.sendChat({ kind: 'text', text, msgId });
+  if (!r.ok) {
+    chatStore.updateStatus(chat.peerId, msgId, { status: DELIVERY.FAILED });
+    toast(r.reason === 'too_long' ? `单条消息最多 ${P.CHAT_TEXT_MAX} 字` : '发送失败', 'error');
+  }
+  ta.value = '';
+  autoGrowInput();
+}
+
+/** 把选中的文件作为「聊天里的文件消息」发送 */
+async function sendChatFiles(files) {
+  if (!state.client || !state.client.paired) { toast('尚未连接到电脑', 'warn'); return; }
+  if (!files || !files.length) return;
+  const chat = ensureChat();
+  if (!chat) return;
+
+  // 逐个建 meta + reader
+  const entries = [];
+  const metas = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const meta = { ...buildMeta(file, file.webkitRelativePath || file.name, entries.length + 1) };
+    let reader = null;
+    try { reader = await openLocalFile(file); }
+    catch (e) { toast(`无法读取 ${file.name}`, 'error'); continue; }
+    entries.push({ meta, open: () => reader });
+    metas.push(meta);
+  }
+  if (!entries.length) return;
+
+  const totalBytes = metas.reduce((a, m) => a + (m.size || 0), 0);
+  const msgId = P.makeMsgId(state.device.deviceId);
+
+  // 1) 先落一条文件消息气泡（进度 0），让用户立刻看到
+  const { message } = chatStore.append(chat.peerId, {
+    msgId, dir: 'out', kind: 'file', text: '',
+    ts: Date.now(), status: DELIVERY.SENT,
+    attachment: {
+      files: metas.map((m) => ({ fileId: m.fileId, name: m.name, size: m.size, mime: m.mime, relPath: m.relPath })),
+      totalBytes,
+    },
+  });
+  upsertChatMessage(chat.peerId, message);
+
+  // 2) 发 chat_send（告诉对端「这是一条聊天里的文件消息」）
+  state.client.sendChat({
+    kind: 'file', msgId,
+    attachment: { files: message.attachment.files, totalBytes },
+  });
+
+  // 3) 再发 send_offer，字节走既有分片通道；带 chatId + origin 让电脑端知道这是聊天附件
+  try {
+    const { transferId } = await state.client.sendOffer(entries, { chatId: chat.chatId, origin: 'chat' });
+    chatTransferIndex.set(transferId, { peerId: chat.peerId, msgId });
+    // 把 transferId 回填进附件，便于后续把进度映射回气泡
+    chatStore.updateStatus(chat.peerId, msgId, { transferId });
+    const t = createTransferCard({
+      id: transferId, dir: 'send',
+      name: metas.length === 1 ? metas[0].name : `${metas.length} 个文件`,
+      totalBytes, fileCount: metas.length, startedAt: Date.now(), status: 'waiting',
+    });
+    t.chatPeerId = chat.peerId; t.chatMsgId = msgId;
+  } catch (e) {
+    chatStore.updateStatus(chat.peerId, msgId, { status: DELIVERY.FAILED });
+    toast('发送失败：' + (e.message || e), 'error');
+  }
+}
+
+/** 弹出文件选择器，选中后作为聊天文件消息发送 */
+function pickChatFiles() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.accept = '*/*';
+  input.addEventListener('change', () => {
+    const files = Array.from(input.files || []);
+    if (files.length) sendChatFiles(files);
+  });
+  input.click();
+}
+
+// ── 接收 ────────────────────────────────────────────────────
+
+/** 收到对端的聊天消息 */
+function onChatMessage(msg) {
+  const peerId = chatPeerId();
+  const { message, duplicate } = chatStore.append(peerId, {
+    msgId: msg.msgId,
+    dir: 'in',
+    kind: msg.kind || 'text',
+    text: msg.text || '',
+    ts: msg.ts || Date.now(),
+    status: 'received',
+    attachment: msg.attachment || null,
+  });
+
+  // 无论是否重复投递，都要回执（对方可能只是没收到 ack 而重发）
+  if (state.client) state.client.sendChatAck(message.msgId, message.ts);
+  if (duplicate) return;
+
+  if (peerId === CHAT.activeId && state.pane === 'chat') {
+    upsertChatMessage(peerId, message);
+    chatStore.markLocalRead(peerId);
+    if (state.client) state.client.sendChatRead(Date.now());
+  } else {
+    renderChatBadge();
+    toast('收到一条新消息', 'info');
+  }
+}
+
+function onChatAck(msg) {
+  const peerId = chatPeerId();
+  const updated = chatStore.updateStatus(peerId, msg.msgId, { status: DELIVERY.DELIVERED });
+  if (updated && peerId === CHAT.activeId) upsertChatMessage(peerId, updated);
+}
+
+function onChatRead(msg) {
+  const peerId = chatPeerId();
+  chatStore.markPeerRead(peerId, msg.upToTs || 0);
+  // 整批状态都变了，这里直接重建时间线最省事（已读回执不频繁）
+  if (peerId === CHAT.activeId) {
+    CHAT.messages = chatStore.list(peerId).messages;
+    renderTimeline();
+  }
+}
+
+/** 把传输进度映射回聊天里的文件气泡 */
+function updateChatProgressFromTransfer(p) {
+  const link = chatTransferIndex.get(p.transferId);
+  if (!link) return;
+  const list = chatStore.list(link.peerId).messages;
+  const m = list.find((x) => x.msgId === link.msgId);
+  if (!m) return;
+  const total = (m.attachment && m.attachment.totalBytes) || 0;
+  const progress = total > 0 ? Math.min(1, (p.transferredBytes || 0) / total) : 0;
+  chatStore.updateStatus(link.peerId, link.msgId, { progress });
+  if (link.peerId === CHAT.activeId) {
+    const cached = CHAT.messages.find((x) => x.msgId === link.msgId);
+    if (cached) { cached.progress = progress; updateMessageEl(cached); }
+  }
+}
+
+/** 传输结束 → 把聊天文件气泡标为完成 */
+function markChatTransferDone(transferId, ok = true) {
+  const link = chatTransferIndex.get(transferId);
+  if (!link) return;
+  chatTransferIndex.delete(transferId);
+  const patch = ok ? { done: true, progress: 1 } : { status: DELIVERY.FAILED };
+  const m = chatStore.updateStatus(link.peerId, link.msgId, patch);
+  if (m && link.peerId === CHAT.activeId) upsertChatMessage(link.peerId, m);
+}
+
+// ── 面板切换 ────────────────────────────────────────────────
+
+function setPane(pane) {
+  state.pane = pane;
+  document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('is-on', b.dataset.pane === pane));
+  document.querySelectorAll('#pane-files, #pane-chat').forEach((el) => {
+    el.classList.toggle('is-on', el.dataset.pane === pane);
+  });
+  if (pane === 'chat') openChatPane();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -681,6 +1112,8 @@ function onProgress(p) {
   t.etaMs = p.etaMs;
   t.status = 'active';
   renderTransfers();
+  // 同步更新聊天里文件气泡的进度
+  updateChatProgressFromTransfer(p);
 }
 
 function onFileDone(d) {
@@ -693,6 +1126,7 @@ function onFileDone(d) {
     // 记入"最近接收"列表
     if (t.dir === 'receive') pushRecvItem(d.path || d.fileId, d.size, t.startedAt);
   }
+  markChatTransferDone(d.transferId, true);
 }
 
 const recvItems = [];
@@ -794,11 +1228,7 @@ function saveName() {
 // 工具
 // ─────────────────────────────────────────────────────────────
 
-function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+// escapeHtml / cssEscape 定义在聊天区块（文件上部），此处不再重复定义。
 
 // ─────────────────────────────────────────────────────────────
 // 事件绑定
@@ -853,6 +1283,39 @@ function bind() {
   $('btnAccept').addEventListener('click', acceptOffer);
   $('btnReject').addEventListener('click', rejectOffer);
 
+  // 传输 / 聊天 面板切换
+  document.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setPane(btn.dataset.pane));
+  });
+
+  // 聊天输入
+  const chatInput = $('chatInput');
+  chatInput.addEventListener('input', autoGrowInput);
+  chatInput.addEventListener('keydown', (e) => {
+    // 桌面浏览器里 Enter 发送、Shift+Enter 换行；手机软键盘走「发送」键
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatText(); }
+  });
+  $('btnChatSend').addEventListener('click', sendChatText);
+  $('btnChatAttach').addEventListener('click', pickChatFiles);
+
+  // 时间线里的「重发」
+  $('chatTimeline').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-retry]');
+    if (!btn) return;
+    const msgId = btn.dataset.retry;
+    const m = CHAT.messages.find((x) => x.msgId === msgId);
+    if (!m || !state.client) return;
+    if (m.kind === 'text') {
+      const r = state.client.sendChat({ kind: 'text', text: m.text, msgId });
+      if (r.ok) {
+        chatStore.updateStatus(CHAT.activeId, msgId, { status: DELIVERY.SENT });
+        toast('已重新发送', 'ok');
+      }
+    } else {
+      toast('请重新选择文件发送', 'warn');
+    }
+  });
+
   window.addEventListener('beforeunload', () => {
     if (state.client) { try { state.client.close(); } catch (_) {} }
   });
@@ -876,6 +1339,51 @@ function boot() {
   showScreen('connect');
   renderConnectionBadge(false);
   renderCameraPermission();
+  // 聊天：初始面板 + 未读红点
+  setPane('files');
+  renderChatBadge();
+  autoGrowInput();
+
+  // 开发调试钩子：仅用于截图/联调时注入假数据，生产构建下也不会被执行
+  // （除非显式调用 window.__ltpSeedChat()，不影响正常使用）
+  window.__ltpSeedChat = seedChatForDebug;
+  window.__ltpClearChat = () => {
+    if (CHAT.activeId) chatStore.clear(CHAT.activeId);
+    CHAT.messages = [];
+    renderTimeline();
+    renderChatBadge();
+  };
+}
+
+/** 注入示例消息，便于截图检查气泡/文件卡片/状态位样式 */
+function seedChatForDebug() {
+  const peerId = CHAT.activeId || chatPeerId();
+  if (!peerId || peerId === 'unknown') {
+    // 未连接时也能看样式：临时造一个会话
+    chatStore.openChat({ deviceId: 'desktop-debug', name: 'DESKTOP-IEUIHUM', type: 'desktop' });
+    CHAT.activeId = 'desktop-debug';
+  }
+  const pid = CHAT.activeId;
+  const now = Date.now();
+  const items = [
+    { msgId: 'd1', dir: 'in', kind: 'text', text: '在吗？我把今晚的照片整理好了', ts: now - 300000, status: 'received' },
+    { msgId: 'd2', dir: 'out', kind: 'text', text: '在的，直接发过来吧', ts: now - 260000, status: 'read' },
+    { msgId: 'd3', dir: 'in', kind: 'text', text: '好，照片有点多，我打包一下', ts: now - 210000, status: 'received' },
+    { msgId: 'd4', dir: 'out', kind: 'text', text: '没事，局域网传得快', ts: now - 190000, status: 'delivered' },
+    {
+      msgId: 'd5', dir: 'out', kind: 'file', text: '', ts: now - 120000, status: 'sent', progress: 0.62, done: false,
+      attachment: { totalBytes: 48 * 1024 * 1024, files: [{ fileId: 'f1', name: '周末露营-原图.zip', size: 48 * 1024 * 1024, mime: 'application/zip' }] },
+    },
+    {
+      msgId: 'd6', dir: 'in', kind: 'file', text: '', ts: now - 60000, status: 'received', done: true,
+      attachment: { totalBytes: 128 * 1024 * 1024, files: [{ fileId: 'f2', name: '2026-05-全家福.mp4', size: 128 * 1024 * 1024, mime: 'video/mp4' }] },
+    },
+    { msgId: 'd7', dir: 'in', kind: 'text', text: '收到没？', ts: now - 20000, status: 'received' },
+  ];
+  items.forEach((m) => chatStore.append(pid, m));
+  CHAT.messages = chatStore.list(pid).messages;
+  renderTimeline();
+  renderChatBadge();
 }
 
 boot();

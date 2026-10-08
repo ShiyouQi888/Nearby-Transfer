@@ -93,6 +93,10 @@ class Session extends EventEmitter {
       case P.MSG.PING: return this.send(P.makeMessage(P.MSG.PONG, {}, this.server.self.deviceId));
       case P.MSG.PONG: this.lastPong = Date.now(); return;
       case P.MSG.BYE: return this.close();
+      // ── 聊天 ──
+      case P.MSG.CHAT_SEND: return this._onChatSend(msg);
+      case P.MSG.CHAT_ACK: return this._onChatAck(msg);
+      case P.MSG.CHAT_READ: return this._onChatRead(msg);
       default: return;
     }
   }
@@ -189,8 +193,22 @@ class Session extends EventEmitter {
       files,
       totalBytes: msg.totalBytes || files.reduce((a, f) => a + (f.size || 0), 0),
       saveDir: this.server.saveDir,
+      // 聊天上下文：origin='chat' 且该会话已「接受」时静默收，不再弹窗打断对话
+      chatId: msg.chatId || null,
+      origin: msg.origin || null,
     };
     this.pendingOffer = offer;
+
+    const peerId = this.peerDevice && this.peerDevice.deviceId;
+    const chatStore = this.server.chatStore;
+    const auto = msg.origin === 'chat' && peerId && chatStore &&
+      chatStore.canAutoAccept(peerId, { files, totalBytes: offer.totalBytes });
+    if (auto) {
+      this.emit('offer:auto', offer);
+      await this.acceptOffer(offer.transferId);
+      return;
+    }
+
     // 交给 UI，等用户确认（协议 §6.2：接收方必须由用户确认）
     this.emit('offer:incoming', offer);
   }
@@ -349,8 +367,11 @@ class Session extends EventEmitter {
     this._inflightSend = { transfer, list };
     transfer.status = 'offered';
 
+    // 聊天来源：带上 chatId，接收端据此判断是否走「静默接收」
     this.send(P.makeMessage(P.MSG.SEND_OFFER, {
       transferId, files, totalBytes,
+      chatId: opts.chatId || undefined,
+      origin: opts.origin || undefined,
     }, this.server.self.deviceId));
 
     this.server.emit('transfer:offered', { transferId, transfer });
@@ -363,7 +384,10 @@ class Session extends EventEmitter {
       }
     }, 60000);
     this._offerTimer = timer;
-    return { ok: true, transferId, files: files.length, totalBytes };
+    return {
+      ok: true, transferId, files: files.length, totalBytes,
+      fileList: files.map((f) => ({ fileId: f.fileId, name: f.name, size: f.size, mime: f.mime, isDir: !!f.isDir, relPath: f.relPath || '' })),
+    };
   }
 
   async _onSendAccept(msg) {
@@ -485,9 +509,116 @@ class Session extends EventEmitter {
     this.server.emit('transfer:cancelled', { transferId: msg.transferId, by: msg.by, transfer: t });
   }
 
+  // ── 聊天（Chat over LTP/1） ─────────────────────────────────
+  //
+  // 设计取舍见 docs/CHAT.md：
+  //   · 文本消息直接落聊天时间线，不经过传输层；
+  //   · 文件消息先发 chat_send（让气泡立刻出现），再走 send_offer 传输；
+  //   · 去重一律按 msgId（重连重放会重复投递）；
+  //   · 排序以「到达顺序」为准，ts 仅用于展示。
+
+  /** 收到一条聊天消息 */
+  _onChatSend(msg) {
+    if (!this._requirePaired()) return;
+    const peerId = (this.peerDevice && this.peerDevice.deviceId) || msg.deviceId || 'unknown';
+    const chatStore = this.server.chatStore;
+    if (!chatStore) return;
+
+    let text = String(msg.text || '');
+    if (text.length > P.CHAT_TEXT_MAX) {
+      this.send(P.makeMessage(P.MSG.ERROR, {
+        code: P.ERR.CHAT_TOO_LONG, message: `单条消息超过 ${P.CHAT_TEXT_MAX} 字`,
+      }, this.server.self.deviceId));
+      return;
+    }
+
+    const { message, duplicate } = chatStore.append(peerId, {
+      msgId: msg.msgId,
+      dir: 'in',
+      kind: msg.kind || 'text',
+      text,
+      ts: msg.ts || Date.now(),
+      status: 'received',
+      attachment: msg.attachment || null,
+      peerName: this.peerDevice && this.peerDevice.name,
+      silent: !!msg.silent,
+    });
+
+    // 回执：告诉对方「已收到并写入时间线」
+    this.send(P.makeMessage(P.MSG.CHAT_ACK, {
+      msgId: message.msgId, chatId: P.makeChatId(peerId), ts: message.ts,
+    }, this.server.self.deviceId));
+
+    if (!duplicate) {
+      this.server.emit('chat:message', {
+        peerId,
+        chatId: P.makeChatId(peerId),
+        message,
+        peer: this.peerDevice,
+        sessionId: this.id,
+      });
+    }
+  }
+
+  /** 对方确认收到我们的消息 */
+  _onChatAck(msg) {
+    const peerId = (this.peerDevice && this.peerDevice.deviceId) || 'unknown';
+    const chatStore = this.server.chatStore;
+    if (!chatStore || !msg.msgId) return;
+    chatStore.updateStatus(peerId, msg.msgId, { status: 'delivered' });
+    this.server.emit('chat:delivered', { peerId, msgId: msg.msgId });
+  }
+
+  /** 对方已读了我们的消息（打开了会话） */
+  _onChatRead(msg) {
+    const peerId = (this.peerDevice && this.peerDevice.deviceId) || 'unknown';
+    const chatStore = this.server.chatStore;
+    if (!chatStore) return;
+    chatStore.markPeerRead(peerId, msg.upToTs || 0);
+    this.server.emit('chat:read', { peerId, upToTs: msg.upToTs || 0 });
+  }
+
+  /** 由 UI 调用：发送文本 / 文件消息 */
+  sendChat(payload) {
+    if (!this._requirePaired()) return { ok: false, reason: 'not_paired' };
+    const peerId = (this.peerDevice && this.peerDevice.deviceId) || 'unknown';
+    const kind = payload.kind || 'text';
+    const msgId = payload.msgId || P.makeMsgId(this.server.self.deviceId);
+
+    if (kind === 'text') {
+      const text = String(payload.text || '').trim();
+      if (!text) return { ok: false, reason: 'empty' };
+      if (text.length > P.CHAT_TEXT_MAX) return { ok: false, reason: 'too_long' };
+      this.send(P.makeMessage(P.MSG.CHAT_SEND, {
+        chatId: P.makeChatId(peerId), msgId, kind: 'text', text,
+      }, this.server.self.deviceId));
+      return { ok: true, msgId };
+    }
+
+    // 文件消息：chat_send 携带 attachment 元数据；真正的字节走后续 send_offer
+    this.send(P.makeMessage(P.MSG.CHAT_SEND, {
+      chatId: P.makeChatId(peerId), msgId, kind: 'file',
+      text: payload.text || '',
+      attachment: payload.attachment || null,
+    }, this.server.self.deviceId));
+    return { ok: true, msgId };
+  }
+
+  /** 由 UI 调用：上报「我已读到某位点」，让对端把消息标为已读 */
+  sendChatRead() {
+    if (!this.paired) return { ok: false };
+    const peerId = (this.peerDevice && this.peerDevice.deviceId) || 'unknown';
+    const chatStore = this.server.chatStore;
+    const chat = chatStore && chatStore.get(peerId);
+    const upToTs = (chat && chat.readUpTo) || Date.now();
+    this.send(P.makeMessage(P.MSG.CHAT_READ, {
+      chatId: P.makeChatId(peerId), upToTs,
+    }, this.server.self.deviceId));
+    return { ok: true, upToTs };
+  }
+
   /** UI 调用：取消发送中/接收中的传输 */
-  cancelTransfer(transferId, opts = {}) {
-    const t = this.server.getTransfer(transferId);
+  cancelTransfer(transferId, opts = {}) {    const t = this.server.getTransfer(transferId);
     if (!t) return { ok: false };
     for (const s of this.senders.values()) s.cancel();
     for (const r of this.receivers.values()) r.cancel(opts.keepPartial !== false).catch(() => {});
@@ -514,6 +645,8 @@ class TransferServer extends EventEmitter {
     this.trusted = new Map(opts.trusted || []);   // deviceId -> record
     this.transfers = new Map();                    // transferId -> transfer 记录
     this.history = [];                             // 传输历史（内存 + 持久化由上层负责）
+    /** 聊天会话存储（由 main.js 注入 ChatStore 实例） */
+    this.chatStore = opts.chatStore || null;
     this._server = null;
     this._http = null;
     this._wss = null;
@@ -544,7 +677,8 @@ class TransferServer extends EventEmitter {
         this.sessions.set(s.id, s);
         s.on('disconnected', (info) => { this.sessions.delete(s.id); this.emit('device:disconnected', info); });
         s.on('session:error', (e) => this.emit('session:error', { sessionId: s.id, message: String(e.message || e) }));
-        ['device:connected', 'pair:failed', 'offer:incoming', 'offer:rejected'].forEach((ev) =>
+        ['device:connected', 'pair:failed', 'offer:incoming', 'offer:rejected', 'offer:auto',
+          'chat:message', 'chat:delivered', 'chat:read'].forEach((ev) =>
           s.on(ev, (p) => this.emit(ev, p)));
         this.emit('session:new', { sessionId: s.id, remote: s.sock.remoteAddress });
       });
@@ -658,7 +792,8 @@ class TransferServer extends EventEmitter {
       });
       session.on('session:error', (e) =>
         this.emit('session:error', { sessionId: session.id, message: String(e.message || e) }));
-      ['device:connected', 'pair:failed', 'offer:incoming', 'offer:rejected']
+      ['device:connected', 'pair:failed', 'offer:incoming', 'offer:rejected', 'offer:auto',
+        'chat:message', 'chat:delivered', 'chat:read']
         .forEach((ev) => session.on(ev, (p) => this.emit(ev, p)));
     });
   }

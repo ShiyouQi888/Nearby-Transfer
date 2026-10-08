@@ -42,6 +42,7 @@
     <nav class="sidenav">
       <div class="nav-label">连接与设备</div>
       <button class="nav-item active" data-tab="devices"><span class="ni" data-icon="desktop"></span>连接</button>
+      <button class="nav-item" data-tab="chat"><span class="ni" data-icon="chat"></span>聊天<span class="nav-badge" id="chatBadge" hidden></span></button>
       <button class="nav-item" data-tab="send"><span class="ni" data-icon="send"></span>发送</button>
       <div class="nav-label">传输中心</div>
       <button class="nav-item" data-tab="transfers"><span class="ni" data-icon="transfer"></span>传输</button>
@@ -255,6 +256,56 @@
         <div id="sendWorkspace"></div>
       </section>
 
+      <!-- 聊天 -->
+      <section class="tab" id="tab-chat">
+        <div class="chat-shell">
+          <!-- 会话列表 -->
+          <aside class="chat-side">
+            <div class="chat-side-head">
+              <div class="ic-chip sm" data-icon="chat"></div>
+              <h2>会话</h2>
+              <button class="btn ghost small" id="btnNewChat" title="选择在线设备发起会话"><span class="bi" data-icon="plus"></span></button>
+            </div>
+            <ul class="chat-list" id="chatList"></ul>
+            <div class="empty" id="chatListEmpty">还没有会话。在下方选择一个在线设备开始聊天。</div>
+            <div class="chat-online" id="chatOnline">
+              <div class="chat-online-label">在线设备</div>
+              <div id="chatOnlineList"></div>
+            </div>
+          </aside>
+
+          <!-- 对话区 -->
+          <div class="chat-main">
+            <div class="chat-head" id="chatHead" hidden>
+              <div class="chat-peer">
+                <div class="chat-peer-ic" data-icon="desktop"></div>
+                <div>
+                  <div class="chat-peer-name" id="chatPeerName">—</div>
+                  <div class="chat-peer-meta" id="chatPeerMeta"></div>
+                </div>
+              </div>
+              <div class="chat-head-actions">
+                <button class="btn ghost small" id="btnChatClear"><span class="bi" data-icon="trash"></span>清空</button>
+              </div>
+            </div>
+
+            <div class="chat-empty" id="chatEmpty">
+              <div class="chat-empty-ic" data-icon="chat"></div>
+              <div class="chat-empty-title">选择一个会话</div>
+              <div class="chat-empty-sub">支持发送文字消息，也可以直接在对话里发送文件</div>
+            </div>
+
+            <div class="chat-timeline" id="chatTimeline"></div>
+            <div class="chat-dropmask" id="chatDropMask" hidden><span data-icon="upload"></span>松手即可发送文件</div>
+
+            <div class="chat-composer" id="chatComposer" hidden>
+              <button class="chat-attach" id="btnChatAttach" title="发送文件"><span data-icon="folderPlus"></span></button>
+              <textarea id="chatInput" class="chat-input" rows="1" placeholder="输入消息，按 Enter 发送…" spellcheck="false"></textarea>
+              <button class="chat-send" id="btnChatSend" title="发送"><span data-icon="send"></span></button>
+            </div>
+          </div>
+        </div>
+      </section>
       <!-- 传输 -->
       <section class="tab" id="tab-transfers">
         <div class="card">

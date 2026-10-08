@@ -31,6 +31,7 @@ const { execFile } = require('child_process');
 const P = require('../../../shared/protocol.js');
 const { Discovery, listLocalIPv4 } = require('./discovery.js');
 const { TransferServer } = require('./server.js');
+const { ChatStore } = require('./chat.js');
 
 // Windows 通知使用稳定的应用标识，避免系统显示为 electron.app.*。
 if (process.platform === 'win32') app.setAppUserModelId('com.lantransfer.desktop');
@@ -162,6 +163,7 @@ let win = null;
 let tray = null;
 let discovery = null;
 let server = null;
+let chatStore = null;
 let selfDevice = null;
 
 const FIREWALL_RULES = [
@@ -239,6 +241,12 @@ function pushToRenderer(channel, payload) {
 function startServices() {
   buildSelf();
 
+  // ── 聊天会话存储（持久化到 %APPDATA%/ltp/chats*）
+  chatStore = new ChatStore({
+    dir: CONFIG_DIR,
+    onChange: (ev) => pushToRenderer('ltp:chatevent', ev),
+  });
+
   // ── 传输服务
   server = new TransferServer({
     self: selfDevice,
@@ -246,15 +254,17 @@ function startServices() {
     port: P.PORT,
     saveDir: STORE.saveDir,
     trusted: STORE.trusted.map((t) => [t.deviceId, t]),
+    chatStore,
   });
 
   // 转发全部事件给渲染层
   const forward = [
     'listening', 'http:listening', 'http:ready', 'http:error', 'http:ws-open',
     'session:new', 'session:error', 'device:connected', 'device:disconnected',
-    'pair:failed', 'offer:incoming', 'offer:rejected', 'transfer:offered', 'transfer:start',
+    'pair:failed', 'offer:incoming', 'offer:rejected', 'offer:auto', 'transfer:offered', 'transfer:start',
     'transfer:progress', 'transfer:file-complete', 'transfer:complete', 'transfer:error',
     'transfer:cancelled', 'transfer:peer-progress', 'trust:changed',
+    'chat:message', 'chat:delivered', 'chat:read',
   ];
   forward.forEach((ev) => server.on(ev, (payload) => {
     // 进度事件量大，单独走轻量通道
@@ -264,9 +274,14 @@ function startServices() {
       pushToRenderer('ltp:event', { ev, payload });
     }
     if (ev === 'trust:changed') { STORE.trusted = payload.trusted; saveStore(); }
+    // 聊天来源的传输：把进度/完成回写到对应聊天消息，让气泡内的进度条动起来
+    if (ev === 'transfer:progress' && chatStore && payload) {
+      syncChatTransferProgress(payload.transferId, payload.overall, payload.speed, payload.etaMs);
+    }
     if (ev === 'transfer:complete' || ev === 'transfer:cancelled') {
       const t = payload.transfer;
       if (t) {
+        syncChatTransferComplete(t, ev === 'transfer:cancelled');
         const rec = {
           transferId: t.transferId, direction: t.direction, device: t.device,
           totalBytes: t.totalBytes, transferredBytes: t.transferredBytes,
@@ -363,9 +378,20 @@ function createWindow() {
 function hookScreenshot(win) {
   const outDir = process.env.LTP_SHOT_DIR || path.join(process.cwd(), '_shots');
   const plan = (process.env.LTP_SHOT_PLAN || 'devices:desktop.png,pair:pair.png,trusted:trusted.png').split(',');
+  const seedChat = process.env.LTP_SHOT_SEED_CHAT === '1';
   win.webContents.once('did-finish-load', async () => {
     try { fs.mkdirSync(outDir, { recursive: true }); } catch (_) {}
     await new Promise((r) => setTimeout(r, 2600));
+    // 可选：注入一段示例会话，用于截图检查聊天气泡/文件卡片/状态的渲染
+    if (seedChat) {
+      try {
+        // 注意：不要 await 这个表达式 —— __ltpSeedChat 内部有若干 IPC 往返，
+        // 返回的 Promise 在本阶段可能长时间不 settle，会把截图流程整个挂住。
+        win.webContents.executeJavaScript('window.__ltpSeedChat && window.__ltpSeedChat()')
+          .catch((e) => console.error('[shot] 注入示例会话失败', e && e.message));
+        await new Promise((r) => setTimeout(r, 1200));
+      } catch (e) { console.error('[shot] 注入示例会话失败', e.message); }
+    }
     for (const item of plan) {
       const [tab, file] = item.split(':');
       await win.webContents.executeJavaScript(
@@ -398,6 +424,53 @@ function createTray() {
     tray.on('click', showMainWindow);
     tray.on('double-click', showMainWindow);
   } catch (error) { console.error('[tray] Unable to create tray icon:', error); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 聊天 ↔ 传输联动
+//
+// 文件消息先落一条聊天记录，随后才走传输链路。这里负责把传输层的
+// 进度与结果回写到那条聊天消息上，让气泡里的进度条/状态跟着走。
+// 关联键是 attachment.transferId。
+// ─────────────────────────────────────────────────────────────
+
+/** 找出引用该 transferId 的聊天消息（返回 { peerId, msgId }） */
+function findChatMessageByTransfer(transferId) {
+  if (!chatStore || !transferId) return null;
+  for (const chat of chatStore.chats.values()) {
+    const list = chatStore.list(chat.peerId, { limit: P.CHAT_HISTORY_LIMIT || 2000 }).messages;
+    const m = list.find((x) => x.attachment && x.attachment.transferId === transferId);
+    if (m) return { peerId: chat.peerId, msgId: m.msgId, message: m };
+  }
+  return null;
+}
+
+function syncChatTransferProgress(transferId, transferredBytes, speed, etaMs) {
+  const hit = findChatMessageByTransfer(transferId);
+  if (!hit) return;
+  chatStore.updateStatus(hit.peerId, hit.msgId, {
+    attachment: { ...hit.message.attachment, transferredBytes, speed, etaMs, progress: true },
+  });
+}
+
+function syncChatTransferComplete(transfer, cancelled) {
+  if (!transfer) return;
+  const hit = findChatMessageByTransfer(transfer.transferId);
+  if (!hit) return;
+  const status = cancelled ? 'cancelled'
+    : transfer.status === 'done' ? 'done'
+    : (transfer.status === 'rejected' ? 'rejected' : 'failed');
+  chatStore.updateStatus(hit.peerId, hit.msgId, {
+    status,
+    attachment: {
+      ...hit.message.attachment,
+      transferredBytes: transfer.transferredBytes,
+      totalBytes: transfer.totalBytes,
+      progress: false,
+      savePaths: (transfer.files || []).map((f) => f.path).filter(Boolean),
+    },
+  });
+  pushToRenderer('ltp:chatevent', { kind: 'message:update', peerId: hit.peerId, transferId: transfer.transferId });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -659,6 +732,127 @@ function registerIpc() {
 
   // 撤销信任
   ipcMain.handle('ltp:untrust', (e, deviceId) => ({ ok: server ? server.untrust(deviceId) : false }));
+
+  // ── 聊天 ───────────────────────────────────────────────
+  ipcMain.handle('ltp:getChats', () => (chatStore ? chatStore.summary() : []));
+  ipcMain.handle('ltp:getChatMessages', (e, { peerId, before, limit } = {}) =>
+    (chatStore ? chatStore.list(String(peerId || ''), { before, limit }) : { messages: [], hasMore: false }));
+
+  /** 发送文本消息；对端离线时保留为 pending，返回 offline 让 UI 提示 */
+  ipcMain.handle('ltp:sendChatText', async (e, { peerId, text } = {}) => {
+    if (!server || !chatStore) return { ok: false, reason: 'no_server' };
+    const p = String(text || '').trim();
+    if (!p) return { ok: false, reason: 'empty' };
+    if (p.length > P.CHAT_TEXT_MAX) return { ok: false, reason: 'too_long' };
+
+    const chat = chatStore.openChat({ deviceId: peerId });
+    const msgId = P.makeMsgId(STORE.deviceId);
+    const session = server.sessionOf(peerId);
+    const status = session ? 'sent' : 'pending';
+    const { message } = chatStore.append(peerId, {
+      msgId, dir: 'out', kind: 'text', text: p, ts: Date.now(), status,
+    });
+    if (session) session.sendChat({ kind: 'text', text: p, msgId });
+    return { ok: true, msgId, message, delivered: !!session, reason: session ? null : 'offline', chatId: chat.chatId };
+  });
+
+  /**
+   * 发送文件消息：先落一条 file 类型聊天消息（气泡立刻出现），
+   * 再用现有 startSend 走传输链路（send_offer 带 chatId + origin:'chat'）。
+   */
+  ipcMain.handle('ltp:sendChatFiles', async (e, { peerId, paths, maxBytesPerSec } = {}) => {
+    if (!server || !chatStore) return { ok: false, reason: 'no_server' };
+    const session = server.sessionOf(peerId);
+    if (!session) return { ok: false, reason: 'offline' };
+
+    const realPaths = (paths || []).filter((p) => typeof p === 'string' && p);
+    if (!realPaths.length) return { ok: false, reason: 'empty' };
+
+    // 先建 file 消息（此时还不知道 transferId，用占位；startSend 后回填）
+    const chat = chatStore.openChat({ deviceId: peerId });
+    const msgId = P.makeMsgId(STORE.deviceId);
+    const { message } = chatStore.append(peerId, {
+      msgId, dir: 'out', kind: 'file', ts: Date.now(), status: 'sending',
+      attachment: { transferId: null, files: realPaths.map((p, i) => ({
+        fileId: `f_${i + 1}`, name: path.basename(p), size: 0, isDir: false, relPath: '',
+      })), totalBytes: 0, localPaths: realPaths },
+    });
+
+    try {
+      const r = await session.startSend(realPaths, { maxBytesPerSec, chatId: chat.chatId, origin: 'chat' });
+      if (!r || !r.ok) {
+        chatStore.updateStatus(peerId, msgId, { status: 'failed' });
+        return { ok: false, reason: (r && r.reason) || 'send_failed' };
+      }
+      // 回填真实 transferId 与文件元数据
+      chatStore.updateStatus(peerId, msgId, {
+        attachment: { transferId: r.transferId, files: r.fileList || message.attachment.files, totalBytes: r.totalBytes, localPaths: realPaths },
+      });
+      session.sendChat({
+        kind: 'file', msgId,
+        attachment: { transferId: r.transferId, files: r.fileList || message.attachment.files, totalBytes: r.totalBytes },
+      });
+      return { ok: true, msgId, transferId: r.transferId, message };
+    } catch (err) {
+      chatStore.updateStatus(peerId, msgId, { status: 'failed' });
+      return { ok: false, reason: 'send_failed', message: String(err.message || err) };
+    }
+  });
+
+  /** 标记本地已读（清零未读 + 回执给对端） */
+  ipcMain.handle('ltp:markChatRead', (e, peerId) => {
+    if (!chatStore) return { ok: false };
+    const r = chatStore.markLocalRead(String(peerId || ''));
+    const session = server && server.sessionOf(peerId);
+    if (session) session.sendChatRead();
+    return r;
+  });
+
+  /** 用户点了「接受会话」——此后该会话内的文件静默接收 */
+  ipcMain.handle('ltp:acceptChatSession', (e, peerId) => {
+    if (!chatStore) return { ok: false };
+    const chat = chatStore.acceptSession(String(peerId || ''));
+    return chat ? { ok: true, chat } : { ok: false };
+  });
+
+  ipcMain.handle('ltp:clearChat', (e, peerId) => (chatStore ? chatStore.clear(String(peerId || '')) : { ok: false }));
+  ipcMain.handle('ltp:deleteChat', (e, peerId) => (chatStore ? chatStore.deleteChat(String(peerId || '')) : { ok: false }));
+
+  /** 重发一条 pending 的出站消息（对端重新上线后） */
+  ipcMain.handle('ltp:retryChatMessage', async (e, { peerId, msgId } = {}) => {
+    if (!server || !chatStore) return { ok: false, reason: 'no_server' };
+    const session = server.sessionOf(peerId);
+    if (!session) return { ok: false, reason: 'offline' };
+    const list = chatStore.list(peerId, { limit: P.CHAT_HISTORY_LIMIT || 2000 }).messages;
+    const m = list.find((x) => x.msgId === msgId);
+    if (!m) return { ok: false, reason: 'not_found' };
+    session.sendChat({
+      kind: m.kind, text: m.text, msgId: m.msgId, attachment: m.attachment,
+    });
+    chatStore.updateStatus(peerId, msgId, { status: 'sent' });
+    return { ok: true };
+  });
+
+  /**
+   * 开发调试专用：往会话里注入一批假消息，用于截图检查气泡渲染。
+   * 仅当 LTP_SHOT=1（截图脚本）时注册，正常运行时不存在这个通道。
+   */
+  if (process.env.LTP_SHOT === '1') {
+    ipcMain.handle('ltp:seedChatMessages', (e, { peerId, messages } = {}) => {
+      if (!chatStore || !peerId) return { ok: false };
+      chatStore.openChat({ deviceId: String(peerId), name: '我的手机', type: 'mobile' });
+      (messages || []).forEach((m, i) => {
+        chatStore.append(String(peerId), {
+          msgId: `seed_${Date.now()}_${i}`,
+          dir: m.dir, kind: m.kind, text: m.text, ts: m.ts,
+          status: m.status, progress: m.progress, done: m.done,
+          attachment: m.attachment || null,
+        });
+      });
+      chatStore.markLocalRead(String(peerId));
+      return { ok: true };
+    });
+  }
 }
 
 /** 由电脑端主动连接某个已发现设备（主要面向手机端作为服务端的场景） */

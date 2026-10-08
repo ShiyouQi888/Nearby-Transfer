@@ -602,3 +602,141 @@ button:focus-visible, input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* ============================================================
+   聊天（Chat over LTP/1）· 手机端
+   与电脑端 .chat-* 同一视觉语言：自己的消息靠右、品牌绿实心气泡；
+   对端消息靠左、surface 底气泡；文件消息统一卡片化。
+   ============================================================ */
+
+/* 传输 / 聊天 分段切换 */
+.seg {
+  display: flex; gap: 4px; margin-bottom: 14px; padding: 4px;
+  border-radius: var(--ds-radius-md); background: var(--ds-bg-elevated);
+  border: 1px solid var(--ds-border);
+}
+.seg-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; border-radius: var(--ds-radius-sm); position: relative;
+  color: var(--ds-text-muted); font-size: 14px; font-weight: 600;
+  transition: background .16s var(--ds-ease), color .16s var(--ds-ease);
+}
+.seg-btn.is-on { color: var(--ds-brand-bright); background: var(--ds-brand-soft); }
+.seg-ic { display: inline-flex; }
+.seg-badge {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
+  line-height: 18px; text-align: center;
+}
+.seg-badge[hidden] { display: none !important; }
+
+/* 面板切换 */
+.pane { display: none; }
+.pane.is-on { display: block; }
+
+/* 时间线 */
+.chat-timeline { display: flex; flex-direction: column; padding-bottom: 8px; }
+.chat-day {
+  margin: 4px 0 14px; padding: 10px 12px; border-radius: var(--ds-radius-md);
+  background: var(--ds-bg-elevated); border: 1px solid var(--ds-border);
+  color: var(--ds-text-muted); font-size: 12px; line-height: 18px; text-align: center;
+}
+.chat-empty { padding: 48px 16px; text-align: center; color: var(--ds-text-muted); }
+.chat-empty[hidden] { display: none !important; }
+.ce-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 60px; height: 60px; margin-bottom: 14px; border-radius: var(--ds-radius-lg);
+  color: var(--ds-brand-bright); background: var(--ds-brand-soft);
+  border: 1px solid rgba(7,193,96,.28);
+}
+.ce-title { font-size: 15px; font-weight: 600; color: var(--ds-text-secondary); margin-bottom: 4px; }
+.ce-sub { font-size: 12px; line-height: 18px; }
+
+/* 消息行 */
+.msg { display: flex; gap: 8px; margin-bottom: 12px; align-items: flex-end; }
+.msg.out { flex-direction: row-reverse; }
+.msg-avatar {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--ds-surface-2); color: var(--ds-text-secondary);
+  border: 1px solid var(--ds-border);
+}
+.msg-body { max-width: 76%; display: flex; flex-direction: column; }
+.msg.out .msg-body { align-items: flex-end; }
+
+.bubble {
+  padding: 10px 13px; border-radius: 16px 16px 16px 4px;
+  background: var(--ds-surface-2); border: 1px solid var(--ds-border);
+  color: var(--ds-text); font-size: 14px; line-height: 21px;
+  word-break: break-word; white-space: pre-wrap;
+}
+.msg.out .bubble {
+  border-radius: 16px 16px 4px 16px;
+  background: var(--ds-brand); border-color: var(--ds-brand);
+  color: #04150c; font-weight: 500;
+}
+.bubble.is-file { padding: 8px; background: var(--ds-surface); border-color: var(--ds-border); }
+.msg.out .bubble.is-file { background: var(--ds-surface); border-color: rgba(7,193,96,.34); color: var(--ds-text); }
+
+.msg-meta {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  color: var(--ds-text-faint); font-size: 11px; line-height: 15px;
+}
+.msg-meta .st { font-weight: 600; }
+.msg-meta .st.is-read { color: var(--ds-brand-bright); }
+.msg-meta .st.is-failed { color: var(--danger); }
+
+/* 文件卡片气泡 */
+.file-card { width: 100%; min-width: 0; max-width: 236px; }
+.file-card-head { display: flex; align-items: center; gap: 10px; }
+.file-card-ico { flex-shrink: 0; }
+.file-card-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.file-card-name {
+  font-size: 13px; font-weight: 600; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-card-size { color: var(--ds-text-muted); font-size: 11px; line-height: 16px; }
+.file-card-bar {
+  height: 6px; margin-top: 8px; border-radius: 999px;
+  background: var(--ds-bg-elevated); overflow: hidden;
+}
+.file-card-bar i {
+  display: block; height: 100%; width: 0; border-radius: 999px;
+  background: var(--ds-brand); box-shadow: 0 0 8px rgba(7,193,96,.28);
+  transition: width .2s var(--ds-ease);
+}
+.file-card-bar.is-done i { background: var(--ds-brand-bright); }
+.file-card-bar[hidden] { display: none !important; }
+
+/* 输入区 */
+.chat-composer {
+  display: flex; align-items: flex-end; gap: 8px;
+  margin-top: 12px; padding: 8px; position: sticky; bottom: 0;
+  border-radius: var(--ds-radius-lg); background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+}
+.chat-attach, .chat-send {
+  flex-shrink: 0; width: 40px; min-height: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--ds-radius-sm);
+}
+.chat-attach { background: var(--ds-surface-2); border: 1px solid var(--ds-border); color: var(--ds-text-secondary); }
+.chat-attach:active { background: #252c28; }
+.chat-send { background: var(--ds-brand); color: #04150c; }
+.chat-send:disabled { opacity: .4; }
+.chat-input {
+  flex: 1; min-height: 40px; max-height: 120px; padding: 9px 12px;
+  border-radius: var(--ds-radius-sm); resize: none; overflow-y: auto;
+  background: var(--ds-bg-elevated); border: 1px solid var(--ds-border);
+  color: var(--ds-text); font-size: 14px; line-height: 22px;
+}
+.chat-input:focus { border-color: var(--ds-brand); outline: none; box-shadow: 0 0 0 3px var(--ds-brand-soft); }
+
+/* 接收确认里的「信任该会话」勾选 */
+.offer-trust {
+  display: flex; align-items: flex-start; gap: 10px; margin-top: 14px;
+  padding: 12px; border-radius: var(--ds-radius-md);
+  background: var(--ds-bg-elevated); border: 1px solid var(--ds-border);
+  color: var(--ds-text-muted); font-size: 12px; line-height: 18px;
+}
+.offer-trust input { min-height: 0; width: 18px; height: 18px; margin-top: 1px; accent-color: var(--ds-brand); flex-shrink: 0; }

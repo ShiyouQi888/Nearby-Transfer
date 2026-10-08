@@ -152,6 +152,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
     if (tab === 'received') renderReceived();
     if (tab === 'about') renderAbout();
     if (tab === 'mobile-download') renderMobileDownload();
+    if (tab === 'chat') refreshChatTab();
   });
 });
 
@@ -933,7 +934,341 @@ $('btnRejectOffer').addEventListener('click', async () => {
   toast('已拒绝接收');
 });
 
-// ── 设置弹窗 ─────────────────────────────────────────
+// ── 聊天 ─────────────────────────────────────────────
+//
+// 与其它页面不同，聊天区**不做整体重绘**：
+//   全量 innerHTML 会导致输入框失焦、滚动位置跳动。
+//   因此这里采用「切换会话时全量重建 + 新消息增量追加 + 进度按 data-msgid 局部更新」。
+
+const CHAT = {
+  chats: [],            // 会话摘要
+  activeId: '',         // 当前打开的 peerId
+  messages: new Map(),  // peerId -> message[]
+  sending: false,
+};
+
+/** 消息上的时间显示：今天只显示时分，否则显示月-日 时:分 */
+function chatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = (x) => String(x).padStart(2, '0');
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function chatDayLabel(ts) {
+  const d = new Date(ts);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 会话摘要副标题 */
+function chatSubtitle(c) {
+  const lm = c.lastMessage;
+  if (!lm) return '暂无消息';
+  const prefix = lm.dir === 'out' ? '我：' : '';
+  if (lm.kind === 'file') return `${prefix}[文件] ${lm.fileName || ''}`.trim();
+  return prefix + (lm.text || '');
+}
+
+async function loadChats() {
+  CHAT.chats = (await api.getChats()) || [];
+  renderChatList();
+  renderChatBadge();
+}
+
+function renderChatBadge() {
+  const badge = $('chatBadge');
+  if (!badge) return;
+  const unread = CHAT.chats.reduce((a, c) => a + (c.unread || 0), 0);
+  badge.hidden = unread <= 0;
+  badge.textContent = unread > 99 ? '99+' : String(unread);
+}
+
+function renderChatList() {
+  const list = $('chatList');
+  if (!list) return;
+  const items = CHAT.chats || [];
+  $('chatListEmpty').hidden = items.length > 0;
+  list.innerHTML = items.map((c) => `
+    <li class="chat-item${c.peerId === CHAT.activeId ? ' active' : ''}" data-peer="${esc(c.peerId)}">
+      <div class="chat-item-ic">${window.Icons.icon(c.peer && c.peer.type === 'mobile' ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}</div>
+      <div class="chat-item-main">
+        <div class="chat-item-name">${esc((c.peer && c.peer.name) || c.peerId)}</div>
+        <div class="chat-item-sub">${esc(chatSubtitle(c))}</div>
+      </div>
+      ${c.unread ? `<span class="chat-item-unread">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
+    </li>`).join('');
+  list.querySelectorAll('[data-peer]').forEach((li) =>
+    li.addEventListener('click', () => openChat(li.dataset.peer)));
+  renderChatOnline();
+}
+
+/** 侧栏「在线设备」：方便直接发起新会话 */
+function renderChatOnline() {
+  const wrap = $('chatOnlineList');
+  if (!wrap) return;
+  const items = getAvailableDevices();
+  if (!items.length) {
+    wrap.innerHTML = '<div class="chat-online-empty">当前没有在线设备</div>';
+    return;
+  }
+  wrap.innerHTML = items.map((d) => `
+    <div class="chat-online-item" data-start="${esc(d.deviceId)}">
+      <span class="dot"></span>
+      <span>${esc(d.name || d.deviceId)}</span>
+    </div>`).join('');
+  wrap.querySelectorAll('[data-start]').forEach((el) =>
+    el.addEventListener('click', () => openChat(el.dataset.start)));
+}
+
+async function openChat(peerId) {
+  if (!peerId) return;
+  CHAT.activeId = peerId;
+  const r = await api.getChatMessages(peerId, { limit: 300 });
+  CHAT.messages.set(peerId, (r && r.messages) || []);
+  const chat = (CHAT.chats || []).find((c) => c.peerId === peerId);
+  const peer = chat ? chat.peer : (getAvailableDevices().find((d) => d.deviceId === peerId) || {});
+  const isMobile = peer.type === 'mobile';
+  $('chatHead').hidden = false;
+  $('chatEmpty').hidden = true;
+  $('chatComposer').hidden = false;
+  $('chatPeerName').textContent = peer.name || peerId;
+  $('chatPeerMeta').textContent = `${isMobile ? '手机' : '电脑'} · ${S.sessions.some((s) => s.device && s.device.deviceId === peerId) ? '已连接' : '未连接'}`;
+  const ic = $('chatHead').querySelector('.chat-peer-ic');
+  if (ic) ic.innerHTML = window.Icons.icon(isMobile ? 'mobile' : 'desktop', { size: 18, sw: 1.7 });
+  renderTimeline();
+  renderChatList();
+  // 本地已读 + 回执给对端
+  await api.markChatRead(peerId);
+  const c = CHAT.chats.find((x) => x.peerId === peerId);
+  if (c) { c.unread = 0; renderChatList(); renderChatBadge(); }
+  scrollChatToEnd();
+  $('chatInput').focus();
+}
+
+function scrollChatToEnd() {
+  const tl = $('chatTimeline');
+  if (tl) tl.scrollTop = tl.scrollHeight;
+}
+
+/** 全量重建时间线（仅在切换会话时调用） */
+function renderTimeline() {
+  const tl = $('chatTimeline');
+  if (!tl) return;
+  const list = CHAT.messages.get(CHAT.activeId) || [];
+  if (!list.length) {
+    tl.innerHTML = '<div class="chat-day">还没有消息，发送第一条吧</div>';
+    return;
+  }
+  let html = '';
+  let lastDay = '';
+  for (const m of list) {
+    const day = chatDayLabel(m.ts);
+    if (day !== lastDay) { html += `<div class="chat-day">${esc(day)}</div>`; lastDay = day; }
+    html += messageHtml(m);
+  }
+  tl.innerHTML = html;
+  fillIcons(tl);
+  hydrateThumbnails(tl);
+  bindMessageActions(tl);
+}
+
+/** 单条消息 HTML */
+function messageHtml(m) {
+  const out = m.dir === 'out';
+  const body = m.kind === 'file' ? fileCardHtml(m) : `<div class="bubble">${esc(m.text)}</div>`;
+  return `
+    <div class="msg${out ? ' out' : ''}" data-msgid="${esc(m.msgId)}">
+      <div class="msg-avatar">${window.Icons.icon(out ? 'desktop' : 'mobile', { size: 15, sw: 1.7 })}</div>
+      <div class="msg-body">
+        ${body}
+        <div class="msg-meta">
+          <span>${esc(chatTime(m.ts))}</span>
+          ${out ? `<span class="st ${esc(m.status)}">${statusText(m.status)}</span>` : ''}
+          ${out && m.status === 'failed' ? `<button class="msg-retry" data-retry="${esc(m.msgId)}">重发</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+function statusText(st) {
+  return { pending: '未送达', sent: '已发送', delivered: '已送达', read: '已读', sending: '发送中', failed: '发送失败' }[st] || '';
+}
+
+function fileCardHtml(m) {
+  const att = m.attachment || {};
+  const files = att.files || [];
+  const total = att.totalBytes || files.reduce((a, f) => a + (f.size || 0), 0);
+  const got = att.transferredBytes || 0;
+  const pct = total ? Math.min(100, (got / total) * 100) : (m.status === 'done' ? 100 : 0);
+  const first = files[0] || {};
+  const label = files.length > 1 ? `${files.length} 个文件` : (first.name || '文件');
+  const isImg = /\.(jpe?g|png|gif|webp|bmp)$/i.test(first.name || '');
+  const path = first.path || (att.savePaths && att.savePaths[0]) || '';
+  const done = m.status === 'done';
+  const failed = m.status === 'failed' || m.status === 'rejected' || m.status === 'cancelled';
+  return `
+    <div class="file-card">
+      <div class="file-card-top">
+        <div class="file-card-ic"${isImg && path ? ` data-thumb-path="${esc(path)}"` : ''}>${window.Icons.fileIcon(first.name || '', { size: 20 })}</div>
+        <div class="file-card-main">
+          <div class="file-card-name">${esc(label)}</div>
+          <div class="file-card-size">
+            ${esc(fmt.bytes(total))}
+            ${done ? '<span class="file-badge-done">· 已完成</span>' : ''}
+            ${failed ? '<span class="file-badge-fail">· 已中断</span>' : ''}
+          </div>
+        </div>
+      </div>
+      ${!done && !failed ? `<div class="file-card-bar"><i style="width:${pct.toFixed(1)}%"></i></div>` : ''}
+      ${done && path ? `<div class="file-card-actions">
+        <button class="btn ghost small" data-open="${esc(path)}">打开</button>
+        <button class="btn ghost small" data-folder="${esc(path)}">定位</button>
+      </div>` : ''}
+    </div>`;
+}
+
+function bindMessageActions(root) {
+  root.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => api.openPath(b.dataset.open)));
+  root.querySelectorAll('[data-folder]').forEach((b) => b.addEventListener('click', () => api.showInFolder(b.dataset.folder)));
+  root.querySelectorAll('[data-retry]').forEach((b) => b.addEventListener('click', async () => {
+    const r = await api.retryChatMessage(CHAT.activeId, b.dataset.retry);
+    if (!(r && r.ok)) toast(r && r.reason === 'offline' ? '对方当前不在线，稍后再试' : '重发失败', 'err');
+  }));
+}
+
+/** 增量追加一条消息（不重绘整个时间线） */
+function appendMessageEl(m) {
+  const tl = $('chatTimeline');
+  if (!tl || !tl.querySelector('[data-msgid]')) { renderTimeline(); return; }
+  const day = chatDayLabel(m.ts);
+  const days = tl.querySelectorAll('.chat-day');
+  const lastDay = days.length ? days[days.length - 1].textContent : '';
+  const holder = document.createElement('div');
+  holder.innerHTML = (day !== lastDay ? `<div class="chat-day">${esc(day)}</div>` : '') + messageHtml(m);
+  while (holder.firstChild) tl.appendChild(holder.firstChild);
+  fillIcons(tl);
+  hydrateThumbnails(tl);
+  bindMessageActions(tl);
+}
+
+/** 只更新某条消息的状态/进度（进度事件高频，必须走局部更新） */
+function updateMessageEl(m) {
+  const tl = $('chatTimeline');
+  if (!tl) return;
+  const el = tl.querySelector(`.msg[data-msgid="${cssEsc(m.msgId)}"]`);
+  if (!el) return;
+  const holder = document.createElement('div');
+  holder.innerHTML = messageHtml(m);
+  const next = holder.firstElementChild;
+  el.replaceWith(next);
+  bindMessageActions(tl);
+}
+
+function upsertChatMessage(peerId, message) {
+  const list = CHAT.messages.get(peerId) || [];
+  const idx = list.findIndex((x) => x.msgId === message.msgId);
+  if (idx >= 0) list[idx] = { ...list[idx], ...message };
+  else list.push(message);
+  if (idx < 0 && list.length > (window.P_CHAT_LIMIT || 2000)) list.shift();
+  CHAT.messages.set(peerId, list);
+}
+
+// 发送
+
+async function sendChatText() {
+  const input = $('chatInput');
+  const text = (input.value || '').trim();
+  if (!text || !CHAT.activeId || CHAT.sending) return;
+  input.value = '';
+  autoGrowInput();
+  CHAT.sending = true;
+  try {
+    const r = await api.sendChatText(CHAT.activeId, text);
+    if (!(r && r.ok)) {
+      toast(r && r.reason === 'offline' ? '对方不在线，消息已保留为未送达' : '发送失败', 'err');
+    } else if (!r.delivered) {
+      toast('对方不在线，消息已保留为未送达', 'err');
+    }
+  } finally { CHAT.sending = false; }
+}
+
+async function sendChatFiles(paths) {
+  if (!CHAT.activeId || !paths || !paths.length) return;
+  const r = await api.sendChatFiles(CHAT.activeId, paths, +$('throttleSel').value || 0);
+  if (!(r && r.ok)) {
+    toast(r && r.reason === 'offline' ? '对方不在线，无法发送文件' : `文件发送失败：${(r && r.reason) || '未知错误'}`, 'err');
+  } else {
+    toast(`已在会话中发送 ${paths.length} 个文件`, 'ok');
+  }
+}
+
+function autoGrowInput() {
+  const el = $('chatInput');
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 130) + 'px';
+}
+
+/**
+ * 传输进度 → 聊天文件气泡。
+ * 进度事件每秒可能来几十次，这里只做「查找 + 局部更新」，不重绘时间线。
+ */
+function updateChatProgressFromTransfer(p) {
+  const tl = $('chatTimeline');
+  if (!tl || !p || !p.transferId) return;
+  const list = CHAT.messages.get(CHAT.activeId) || [];
+  const m = list.find((x) => x.attachment && x.attachment.transferId === p.transferId);
+  if (!m) return;
+  const total = (m.attachment && m.attachment.totalBytes) || p.overallTotal || 0;
+  const got = p.overall != null ? p.overall : p.transferredBytes;
+  m.attachment = { ...m.attachment, transferredBytes: got, speed: p.speed, etaMs: p.etaMs };
+  const el = tl.querySelector(`.msg[data-msgid="${cssEsc(m.msgId)}"] .file-card-bar i`);
+  if (el && total) el.style.width = Math.min(100, (got / total) * 100).toFixed(1) + '%';
+}
+
+// 事件绑定
+
+if ($('chatInput')) {
+  $('chatInput').addEventListener('input', autoGrowInput);
+  $('chatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatText(); }
+  });
+  $('btnChatSend').addEventListener('click', sendChatText);
+  $('btnChatAttach').addEventListener('click', async () => sendChatFiles(await api.pickFiles()));
+  $('btnNewChat').addEventListener('click', () => {
+    const items = getAvailableDevices();
+    if (!items.length) { toast('当前没有在线设备，请先在「连接」页扫描', 'err'); return; }
+    openChat(items[0].deviceId);
+  });
+  $('btnChatClear').addEventListener('click', async () => {
+    if (!CHAT.activeId) return;
+    await api.clearChat(CHAT.activeId);
+    CHAT.messages.set(CHAT.activeId, []);
+    renderTimeline();
+    toast('已清空当前会话', 'ok');
+  });
+
+  // 拖拽文件到对话区即可发送
+  const main = document.querySelector('.chat-main');
+  if (main) {
+    ['dragenter', 'dragover'].forEach((n) => main.addEventListener(n, (e) => {
+      if (!CHAT.activeId) return;
+      e.preventDefault(); e.stopPropagation(); main.classList.add('is-dragging');
+    }));
+    ['dragleave', 'drop'].forEach((n) => main.addEventListener(n, (e) => {
+      e.preventDefault(); e.stopPropagation(); main.classList.remove('is-dragging');
+    }));
+    main.addEventListener('drop', (e) => {
+      const paths = [...(e.dataTransfer.files || [])].map((f) => f.path).filter(Boolean);
+      if (paths.length) sendChatFiles(paths);
+    });
+  }
+}
+
+
 
 $('btnSettings').addEventListener('click', async () => {
   const self = S.self || (await api.getSelf());
@@ -1019,87 +1354,137 @@ document.querySelector('.titlebar').addEventListener('dblclick', async (e) => {
 
 // ── 事件订阅 ─────────────────────────────────────────
 
-function bindEvents() {
-  api.onDevices((list) => { S.devices = list || []; renderDevices(); });
-  api.onWinState(({ maximized }) => setWinMaxIcon(!!maximized));
-
-  api.onEvent(({ ev, payload }) => {
-    if (ev === 'firewall:status') {
-      const holder = $('firewallStatus');
-      if (holder) {
-        holder.textContent = payload && payload.ok
-          ? '已允许局域网访问端口 53317'
-          : '局域网权限未配置，请在设置中点击“自动配置”。';
-        holder.dataset.ready = payload && payload.ok ? '1' : '';
-      }
-      if (payload && payload.ok && payload.changed) toast('已自动配置局域网权限', 'ok');
-      return;
+/** 统一处理主进程推来的业务事件（async，便于内部按需拉取数据） */
+async function handleEvent(ev, payload) {
+  if (ev === 'firewall:status') {
+    const holder = $('firewallStatus');
+    if (holder) {
+      holder.textContent = payload && payload.ok
+        ? '已允许局域网访问端口 53317'
+        : '局域网权限未配置，请在设置中点击“自动配置”。';
+      holder.dataset.ready = payload && payload.ok ? '1' : '';
     }
-    switch (ev) {
-      case 'discovery:scan:progress':
-        if (payload && payload.total) {
-          const pct = (payload.done / payload.total) * 100;
-          $('scanFill').style.width = pct.toFixed(1) + '%';
-          $('scanText').textContent = `已探测 ${payload.done} / ${payload.total}`;
-        }
-        break;
-
-      case 'device:connected':
-        toast(`设备已连接：${(payload.device && payload.device.name) || '未知'}`, 'ok');
-        refreshSessions();
-        break;
-      case 'device:disconnected':
-        refreshSessions();
-        break;
-
-      case 'pair:failed':
-        toast(`配对失败：${(payload.device && payload.device.name) || '未知设备'} 匹配码不正确`, 'err');
-        break;
-
-      case 'offer:incoming':
-        showOffer(payload);
-        break;
-
-      case 'transfer:start': {
-        const t = payload.transfer;
-        if (t) upsertTransfer({ ...t, sessionId: payload.sessionId || t.sessionId });
-        break;
+    if (payload && payload.ok && payload.changed) toast('已自动配置局域网权限', 'ok');
+    return;
+  }
+  switch (ev) {
+    case 'discovery:scan:progress':
+      if (payload && payload.total) {
+        const pct = (payload.done / payload.total) * 100;
+        $('scanFill').style.width = pct.toFixed(1) + '%';
+        $('scanText').textContent = `已探测 ${payload.done} / ${payload.total}`;
       }
-      case 'transfer:complete':
-      case 'transfer:cancelled': {
-        const t = payload.transfer;
-        if (t) {
-          S.transfers.delete(t.transferId);
-          renderTransfers();
-          if (ev === 'transfer:complete' && t.status === 'done') {
-            toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
-            const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
-            notify(isEnglish ? 'Transfer complete' : '传输完成', isEnglish ? `${t.direction === 'send' ? 'Sent' : 'Received'} ${t.files.length} file(s)` : `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
-            if (t.direction === 'receive') {
-              (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', path: f.path || '', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
-              renderReceived();
-            }
+      break;
+
+    case 'device:connected':
+      toast(`设备已连接：${(payload.device && payload.device.name) || '未知'}`, 'ok');
+      refreshSessions();
+      break;
+    case 'device:disconnected':
+      refreshSessions();
+      break;
+
+    case 'pair:failed':
+      toast(`配对失败：${(payload.device && payload.device.name) || '未知设备'} 匹配码不正确`, 'err');
+      break;
+
+    case 'offer:incoming':
+      showOffer(payload);
+      break;
+
+    case 'offer:auto':
+      // 会话内文件：静默接收，不弹确认框（避免打断对话流）
+      toast(`正在接收来自 ${(payload.device && payload.device.name) || '设备'} 的文件…`, 'ok');
+      break;
+
+    case 'chat:message': {
+      const peerId = payload.peerId;
+      upsertChatMessage(peerId, payload.message);
+      const onChatPage = document.querySelector('.nav-item.active')?.dataset.tab === 'chat';
+      if (peerId === CHAT.activeId && onChatPage) {
+        appendMessageEl(payload.message);
+        scrollChatToEnd();
+        api.markChatRead(peerId);
+      } else if (payload.message.dir === 'in') {
+        toast(`新消息来自 ${(payload.peer && payload.peer.name) || peerId}`, 'ok');
+        notify('收到新消息', (payload.peer && payload.peer.name) || peerId);
+      }
+      loadChats();
+      break;
+    }
+    case 'chat:delivered':
+    case 'chat:read': {
+      const r = await api.getChatMessages(payload.peerId, { limit: 300 });
+      CHAT.messages.set(payload.peerId, (r && r.messages) || []);
+      if (payload.peerId === CHAT.activeId) renderTimeline();
+      loadChats();
+      break;
+    }
+
+    case 'transfer:start': {
+      const t = payload.transfer;
+      if (t) upsertTransfer({ ...t, sessionId: payload.sessionId || t.sessionId });
+      break;
+    }
+    case 'transfer:complete':
+    case 'transfer:cancelled': {
+      const t = payload.transfer;
+      if (t) {
+        S.transfers.delete(t.transferId);
+        renderTransfers();
+        if (ev === 'transfer:complete' && t.status === 'done') {
+          toast(`${t.direction === 'send' ? '发送' : '接收'}完成 · ${t.files.length} 个文件 · 用时 ${fmt.dur(t.durationMs)}`, 'ok');
+          const isEnglish = window.LTP_I18N && window.LTP_I18N.getLanguage() === 'en-US';
+          notify(isEnglish ? 'Transfer complete' : '传输完成', isEnglish ? `${t.direction === 'send' ? 'Sent' : 'Received'} ${t.files.length} file(s)` : `${t.direction === 'send' ? '已发送' : '已接收'} ${t.files.length} 个文件`);
+          if (t.direction === 'receive') {
+            (t.files || []).forEach((f) => S.received.unshift({ name: f.name || f.relPath || '文件', path: f.path || '', from: (t.device && t.device.name) || '未知设备', size: f.size || 0, status: '已保存', at: Date.now() }));
+            renderReceived();
           }
         }
-        break;
+        // 聊天来源的传输：刷新气泡状态
+        if (CHAT.activeId) {
+          const r = await api.getChatMessages(CHAT.activeId, { limit: 300 });
+          CHAT.messages.set(CHAT.activeId, (r && r.messages) || []);
+          renderTimeline();
+        }
       }
-      case 'transfer:error':
-        toast('传输错误：' + (payload.message || ''), 'err');
-        break;
-      case 'trust:changed':
-        S.trusted = payload.trusted || [];
-        renderTrusted();
-        renderDevices();
-        break;
-      case 'discovery:device:up':
-        if (payload && payload.type === 'mobile') toast(`发现设备：${payload.name}`, 'ok');
-        break;
-      case 'server:error':
-        $('statusPill').textContent = '端口被占用';
-        $('statusPill').classList.add('bad');
-        toast('服务启动失败：' + (payload.message || ''), 'err');
-        break;
+      break;
     }
+    case 'transfer:error':
+      toast('传输错误：' + (payload.message || ''), 'err');
+      break;
+    case 'trust:changed':
+      S.trusted = payload.trusted || [];
+      renderTrusted();
+      renderDevices();
+      break;
+    case 'discovery:device:up':
+      if (payload && payload.type === 'mobile') toast(`发现设备：${payload.name}`, 'ok');
+      renderChatOnline();
+      break;
+    case 'server:error':
+      $('statusPill').textContent = '端口被占用';
+      $('statusPill').classList.add('bad');
+      toast('服务启动失败：' + (payload.message || ''), 'err');
+      break;
+  }
+}
+
+function bindEvents() {
+  api.onDevices((list) => { S.devices = list || []; renderDevices(); renderChatOnline(); });
+  api.onWinState(({ maximized }) => setWinMaxIcon(!!maximized));
+
+  api.onEvent(({ ev, payload }) => handleEvent(ev, payload));
+  api.onChatEvent((ev) => {
+    // ChatStore 落盘后的变更（含传输进度回写）：刷新会话列表与时间线
+    if (!ev) return;
+    if (ev.kind === 'message:update' && ev.peerId === CHAT.activeId) {
+      api.getChatMessages(CHAT.activeId, { limit: 300 }).then((r) => {
+        CHAT.messages.set(CHAT.activeId, (r && r.messages) || []);
+        renderTimeline();
+      });
+    }
+    loadChats();
   });
 
   // 进度事件：高频，单独处理
@@ -1133,6 +1518,8 @@ function bindEvents() {
     } else {
       renderTransfers();
     }
+    // 聊天里的文件气泡：进度条也要动（按 transferId 找到对应消息局部更新）
+    updateChatProgressFromTransfer(payload);
   });
 
   api.onHistory((h) => { S.history = h || []; renderHistory(); });
@@ -1148,6 +1535,61 @@ async function refreshSessions() {
 async function loadDevices() {
   S.devices = await api.getDevices() || [];
   renderDevices();
+}
+
+async function refreshChatTab() {
+  await loadChats();
+  renderChatOnline();
+  if (CHAT.activeId) {
+    const r = await api.getChatMessages(CHAT.activeId, { limit: 300 });
+    CHAT.messages.set(CHAT.activeId, (r && r.messages) || []);
+    renderTimeline();
+    scrollChatToEnd();
+    await api.markChatRead(CHAT.activeId);
+    const c = CHAT.chats.find((x) => x.peerId === CHAT.activeId);
+    if (c) c.unread = 0;
+    renderChatList();
+    renderChatBadge();
+  }
+}
+
+// ── 开发调试：注入示例会话 ─────────────────────────────
+//
+// 仅供截图/联调时查看聊天气泡的渲染效果（shoot-desktop.js 会调用）。
+// 走真实 IPC 落库，所以看到的样式与真实消息完全一致；不影响正常使用。
+
+async function seedChatForDebug() {
+  const peer = { deviceId: 'mobile-debug', name: '我的手机', type: 'mobile' };
+  await api.acceptChatSession(peer.deviceId).catch(() => {});
+  const now = Date.now();
+  const items = [
+    { kind: 'text', text: '在吗？我把今晚的照片整理好了', dir: 'in', ts: now - 320000, status: 'received' },
+    { kind: 'text', text: '在的，直接发过来吧', dir: 'out', ts: now - 280000, status: 'read' },
+    { kind: 'text', text: '好，照片有点多，我打包一下', dir: 'in', ts: now - 240000, status: 'received' },
+    { kind: 'text', text: '没事，局域网传得快', dir: 'out', ts: now - 200000, status: 'delivered' },
+    {
+      kind: 'file', text: '', dir: 'out', ts: now - 130000, status: 'sent', progress: 0.62, done: false,
+      attachment: {
+        totalBytes: 48 * 1024 * 1024,
+        files: [{ fileId: 'f1', name: '周末露营-原图.zip', size: 48 * 1024 * 1024, mime: 'application/zip' }],
+      },
+    },
+    {
+      kind: 'file', text: '', dir: 'in', ts: now - 70000, status: 'received', done: true, progress: 1,
+      attachment: {
+        totalBytes: 128 * 1024 * 1024,
+        files: [{ fileId: 'f2', name: '2026-05-全家福.mp4', size: 128 * 1024 * 1024, mime: 'video/mp4' }],
+      },
+    },
+    { kind: 'text', text: '收到没？', dir: 'in', ts: now - 25000, status: 'received' },
+  ];
+  // 走后端调试通道一次落库（含入站消息、文件消息、进度/完成态），
+  // 避免在渲染层重复实现状态机。
+  await api.seedChatMessages(peer.deviceId, items).catch(() => {});
+  // 必须走 openChat() —— 头部信息、输入区显示、已读回执都在它里面处理；
+  // 只设 CHAT.activeId + renderTimeline() 会出现「有消息但头部空白、输入框不显示」。
+  await loadChats();
+  await openChat(peer.deviceId);
 }
 
 function arrangePages() {
@@ -1182,6 +1624,8 @@ function arrangePages() {
   renderHistory();
   renderPicks();
   renderTransfers();
+  await loadChats();
+  renderChatOnline();
   await newCodeQuiet();
   await refreshQr();
   const language = $('setLanguage');
@@ -1189,6 +1633,9 @@ function arrangePages() {
 
   // 初始化最大化按钮状态（窗口可能以最大化启动，或上次退出时是最大化）
   setWinMaxIcon(!!(await api.winIsMaximized()));
+
+  // 开发调试钩子（截图脚本用）：注入示例会话，便于检查气泡渲染
+  window.__ltpSeedChat = seedChatForDebug;
 
   setInterval(refreshSessions, 4000);
 })();

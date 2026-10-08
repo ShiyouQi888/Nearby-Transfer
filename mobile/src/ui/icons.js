@@ -48,6 +48,10 @@ export const PATHS = {
   download: '<path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5"/><path d="M4.5 19.5h15"/>',
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v3.5H7"/><path d="M12 8v4.5l3 1.8"/>',
   shield: '<path d="M12 3 5 5.6v5.2c0 4.3 2.9 7.9 7 9.2 4.1-1.3 7-4.9 7-9.2V5.6z"/><path d="m9.2 12 2 2 3.6-3.8"/>',
+  chat: '<path d="M20.5 12a8.5 8.5 0 0 1-12.3 7.7L3.5 21l1.3-4.7A8.5 8.5 0 1 1 20.5 12z"/>',
+  alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.8v4.6M12 16.1v.1"/>',
+  dots: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
+  refresh: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 4.5V10H15"/>',
 };
 
 export function icon(name, size = 24, sw = 1.7) {

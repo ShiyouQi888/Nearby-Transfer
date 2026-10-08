@@ -163,6 +163,18 @@ const PAIR_CODE_TTL_MS = 5 * 60 * 1000;
 /** 二维码临时令牌有效期 */
 const QR_TOKEN_TTL_MS = 5 * 60 * 1000;
 
+// ── 聊天（Chat over LTP/1） ───────────────────────────────────
+/** 单条文本消息最大长度（字符） */
+const CHAT_TEXT_MAX = 4000;
+/** 会话内「静默自动接收」单文件大小上限，超过则仍需用户确认 */
+const CHAT_SILENT_MAX_BYTES = 500 * 1024 * 1024;
+/** 会话内「静默自动接收」单次文件数量上限 */
+const CHAT_SILENT_MAX_FILES = 20;
+/** 单会话本地保留的最大消息条数（超出后从最旧开始裁剪） */
+const CHAT_HISTORY_LIMIT = 2000;
+/** 会话 ID 前缀 */
+const CHAT_ID_PREFIX = 'c_';
+
 const MSG = Object.freeze({
   ANNOUNCE: 'announce',
   PROBE: 'probe',
@@ -182,6 +194,10 @@ const MSG = Object.freeze({
   PING: 'ping',
   PONG: 'pong',
   ERROR: 'error',
+  // ── 聊天 ──
+  CHAT_SEND: 'chat_send',
+  CHAT_ACK: 'chat_ack',
+  CHAT_READ: 'chat_read',
 });
 
 const HELLO_REASON = Object.freeze({
@@ -198,6 +214,7 @@ const ERR = Object.freeze({
   UNKNOWN_FILE: 'UNKNOWN_FILE',
   OFFSET_MISMATCH: 'OFFSET_MISMATCH',
   NOT_PAIRED: 'NOT_PAIRED',
+  CHAT_TOO_LONG: 'CHAT_TOO_LONG',
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -390,6 +407,27 @@ function makeFingerprint(deviceSecret) {
   return `${h.slice(0, 4)}-${h.slice(4, 8)}`;
 }
 
+/**
+ * 会话 ID：以"对端 deviceId"派生。
+ *
+ * 注意：两端各自以自己的对端计算，因此同一段会话在两端得到的 chatId 不同。
+ * 这是刻意的设计 —— chatId 只用于本地时间线索引，跨端关联一律靠 msgId。
+ * 好处是不需要额外的会话协商握手。
+ */
+function makeChatId(peerDeviceId) {
+  return CHAT_ID_PREFIX + String(peerDeviceId || 'unknown').replace(/[^A-Za-z0-9_-]/g, '');
+}
+
+/**
+ * 消息 ID：全局唯一，由发送方生成后全程不变。
+ * 形如 m_9f8e7d_1730000000123_a4f2，用于重连重放场景下的去重。
+ */
+function makeMsgId(senderDeviceId, ts = Date.now()) {
+  const who = String(senderDeviceId || 'x').replace(/^[a-z]+-/, '').slice(0, 6);
+  const rand = crypto.randomBytes(2).toString('hex');
+  return `m_${who}_${ts}_${rand}`;
+}
+
 /** 签发长期令牌：HMAC(secret, deviceId + issuedAt) 截断 */
 function signToken(deviceSecret, deviceId, issuedAt = Date.now(), ttlMs = 0) {
   const payload = `${deviceId}.${issuedAt}.${ttlMs}`;
@@ -573,6 +611,11 @@ export {
   QR_PREFIX,
   PAIR_CODE_TTL_MS,
   QR_TOKEN_TTL_MS,
+  CHAT_TEXT_MAX,
+  CHAT_SILENT_MAX_BYTES,
+  CHAT_SILENT_MAX_FILES,
+  CHAT_HISTORY_LIMIT,
+  CHAT_ID_PREFIX,
   MSG,
   HELLO_REASON,
   ERR,
@@ -584,6 +627,8 @@ export {
   makePairCode,
   makeQrToken,
   makeFingerprint,
+  makeChatId,
+  makeMsgId,
   signToken,
   verifyToken,
   makeTrustRecord,
@@ -616,6 +661,11 @@ export default {
   QR_PREFIX,
   PAIR_CODE_TTL_MS,
   QR_TOKEN_TTL_MS,
+  CHAT_TEXT_MAX,
+  CHAT_SILENT_MAX_BYTES,
+  CHAT_SILENT_MAX_FILES,
+  CHAT_HISTORY_LIMIT,
+  CHAT_ID_PREFIX,
   MSG,
   HELLO_REASON,
   ERR,
@@ -627,6 +677,8 @@ export default {
   makePairCode,
   makeQrToken,
   makeFingerprint,
+  makeChatId,
+  makeMsgId,
   signToken,
   verifyToken,
   makeTrustRecord,

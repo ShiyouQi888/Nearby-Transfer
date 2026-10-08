@@ -253,7 +253,9 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
     eq('侧栏「关于」可切换到对应页', active, true);
 
     const navCount = await ev(`document.querySelectorAll('.nav-item').length`);
-    eq('侧栏共 7 项导航', navCount, 7);
+    // 侧栏导航 9 项：连接/聊天/发送/传输/接收/历史/历史设备/手机端下载/关于
+    // （聊天为后续新增功能；此断言随功能增删同步维护）
+    eq('侧栏共 9 项导航', navCount, 9);
 
     const ver = await ev(`document.getElementById('aboutVersion').textContent`);
     ver && ver !== '—' ? ok('版本号已渲染：v' + ver) : bad('版本号未渲染', String(ver));
@@ -293,7 +295,7 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
     } else bad('关于页截图失败');
   }
 
-  console.log('\n[D] 设置弹窗「常规 / 关于」页签');
+  console.log('\n[D] 设置弹窗（本机配置，不含关于页签）');
   {
     await ev(`document.getElementById('btnSettings').click()`);
     await wait(600);
@@ -301,22 +303,26 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
     const open = await ev(`!document.getElementById('settingsModal').hidden`);
     eq('设置弹窗已打开', open, true);
 
-    const t0 = await ev(`document.querySelector('.mtab.active').dataset.mtab`);
-    eq('默认停在「常规」页签', t0, 'general');
+    // 设计已收敛：设置弹窗只放本机运行配置，版本/版权/联系信息独立成「关于」页，
+    // 因此弹窗内不再有「常规 / 关于」页签。
+    const paneVisible = await ev(`(() => {
+      const p = document.getElementById('mpane-general');
+      return !!p && getComputedStyle(p).display !== 'none';
+    })()`);
+    eq('本机配置面板可见', paneVisible, true);
 
-    await ev(`document.querySelector('.mtab[data-mtab="about"]').click()`);
-    await wait(600);
-    const t1 = await ev(`document.querySelector('.mtab.active').dataset.mtab`);
-    eq('可切换到「关于」页签', t1, 'about');
+    const hasAboutTab = await ev(`!!document.querySelector('#settingsModal .mtab, #settingsModal [data-mtab]')`);
+    eq('弹窗内不再有页签（关于页已独立）', hasAboutTab, false);
 
-    const paneOk = await ev(`document.getElementById('mpane-about').classList.contains('active') && !document.getElementById('mpane-general').classList.contains('active')`);
-    eq('关于面板显示、常规面板隐藏', paneOk, true);
+    const hasAboutPane = await ev(`!document.getElementById('mpane-about')`);
+    eq('弹窗内不再有关于面板', hasAboutPane, true);
 
-    const miniVer = await ev(`document.getElementById('setAboutVersion').textContent`);
-    miniVer && miniVer !== '—' ? ok('弹窗内版本号已渲染：v' + miniVer) : bad('弹窗内版本号未渲染', String(miniVer));
-
-    const miniRows = await ev(`document.querySelectorAll('#mpane-about .contact-row').length`);
-    eq('弹窗关于页有 3 项联系方式', miniRows, 3);
+    // 关键字段齐备
+    const fieldsOk = await ev(`(() => {
+      const ids = ['setName', 'setLanguage', 'setSaveDir', 'setInfo', 'firewallStatus'];
+      return ids.every((id) => !!document.getElementById(id));
+    })()`);
+    eq('设置项齐全（名称/语言/目录/协议/防火墙）', fieldsOk, true);
 
     const shot2 = await send('Page.captureScreenshot', { format: 'png' });
     if (shot2 && shot2.data) {
@@ -324,13 +330,13 @@ const getJson = (p) => new Promise((res, rej) => http.get({ host: '127.0.0.1', p
       ok('已保存 _shots/about-modal.png');
     } else bad('设置弹窗截图失败');
 
-    // 关闭后再打开，应回到「常规」
+    // 关闭再打开，状态应恢复正常
     await ev(`document.getElementById('btnCloseSettings').click()`);
     await wait(400);
     await ev(`document.getElementById('btnSettings').click()`);
     await wait(500);
-    const t2 = await ev(`document.querySelector('.mtab.active').dataset.mtab`);
-    eq('重新打开回到「常规」页签', t2, 'general');
+    const reopened = await ev(`!document.getElementById('settingsModal').hidden`);
+    eq('重新打开设置弹窗正常', reopened, true);
     await ev(`document.getElementById('btnCloseSettings').click()`);
   }
 

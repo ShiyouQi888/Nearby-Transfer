@@ -307,6 +307,16 @@ export class MobileClient extends EventTarget {
         this.offers.push(msg);
         this._fire('offer', msg);
         break;
+      // ── 聊天 ──
+      case P.MSG.CHAT_SEND:
+        this._fire('chat', msg);
+        break;
+      case P.MSG.CHAT_ACK:
+        this._fire('chat_ack', msg);
+        break;
+      case P.MSG.CHAT_READ:
+        this._fire('chat_read', msg);
+        break;
       case P.MSG.SEND_ACCEPT:
         this._fire('accept', msg);
         this._onAccept(msg);
@@ -388,14 +398,64 @@ export class MobileClient extends EventTarget {
 
   /**
    * @param {Array<{meta:object, open:()=>Promise<{size:number,read:(offset,len)=>Promise<Uint8Array>}>}>} entries
+   * @param {object} [opts] { chatId, origin } —— 聊天内发文件时带上，让电脑端识别为聊天附件
    */
-  async sendOffer(entries) {
+  async sendOffer(entries, opts = {}) {
     const transferId = 't_m_' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
     const files = entries.map((e) => e.meta);
     const totalBytes = files.reduce((a, f) => a + (f.size || 0), 0);
     this._outgoing = { transferId, entries };
-    this.sendMsg(P.MSG.SEND_OFFER, { transferId, files, totalBytes }, this.device.deviceId);
+    const fields = { transferId, files, totalBytes };
+    if (opts.chatId) fields.chatId = opts.chatId;
+    if (opts.origin) fields.origin = opts.origin;
+    this.sendMsg(P.MSG.SEND_OFFER, fields, this.device.deviceId);
     return { transferId, files, totalBytes };
+  }
+
+  // ── 聊天（Chat over LTP/1） ──────────────────────────────
+
+  /**
+   * 发送一条聊天消息。
+   * @param {{kind?:string, text?:string, msgId?:string, attachment?:object}} payload
+   * @returns {{ok:boolean, msgId?:string, reason?:string}}
+   */
+  sendChat(payload = {}) {
+    if (!this.paired) return { ok: false, reason: 'not_paired' };
+    const peerId = (this.server && this.server.deviceId) || 'unknown';
+    const kind = payload.kind || 'text';
+    const msgId = payload.msgId || P.makeMsgId(this.device.deviceId);
+
+    if (kind === 'text') {
+      const text = String(payload.text || '').trim();
+      if (!text) return { ok: false, reason: 'empty' };
+      if (text.length > P.CHAT_TEXT_MAX) return { ok: false, reason: 'too_long' };
+      this.sendMsg(P.MSG.CHAT_SEND, { chatId: P.makeChatId(peerId), msgId, kind: 'text', text }, this.device.deviceId);
+      return { ok: true, msgId };
+    }
+
+    // 文件消息：chat_send 只带附件元数据，真正的字节走 send_offer
+    this.sendMsg(P.MSG.CHAT_SEND, {
+      chatId: P.makeChatId(peerId), msgId, kind: 'file',
+      text: payload.text || '',
+      attachment: payload.attachment || null,
+    }, this.device.deviceId);
+    return { ok: true, msgId };
+  }
+
+  /** 回执：告诉对方「已收到并写入时间线」 */
+  sendChatAck(msgId, ts) {
+    const peerId = (this.server && this.server.deviceId) || 'unknown';
+    this.sendMsg(P.MSG.CHAT_ACK, { msgId, chatId: P.makeChatId(peerId), ts: ts || Date.now() }, this.device.deviceId);
+  }
+
+  /** 上报「我已读到某位点」，让对端把消息标为已读 */
+  sendChatRead(upToTs) {
+    if (!this.paired) return { ok: false };
+    const peerId = (this.server && this.server.deviceId) || 'unknown';
+    this.sendMsg(P.MSG.CHAT_READ, {
+      chatId: P.makeChatId(peerId), upToTs: upToTs || Date.now(),
+    }, this.device.deviceId);
+    return { ok: true };
   }
 
   async _onAccept(msg) {

@@ -95,27 +95,63 @@
       <span class="dot-ok" id="peerDot"></span>
     </div>
 
-    <!-- 进行中传输 -->
-    <div id="activeWrap"></div>
-
-    <!-- 发送区 -->
-    <div class="card">
-      <div class="card-title"><span class="ct-ic" data-icon="send"></span>发送到电脑</div>
-      <div class="send-grid">
-        <button class="tile" data-pick="image"><span class="tile-ic" data-icon="image"></span>图片</button>
-        <button class="tile" data-pick="video"><span class="tile-ic" data-icon="video"></span>视频</button>
-        <button class="tile" data-pick="doc"><span class="tile-ic" data-icon="doc"></span>文档</button>
-        <button class="tile" data-pick="any"><span class="tile-ic" data-icon="clip"></span>其他文件</button>
-      </div>
-      <div class="pick-preview" id="pickPreview"></div>
-      <button class="btn primary block" id="btnSend" disabled>选择要发送的内容</button>
+    <!-- 传输 / 聊天 切换 -->
+    <div class="seg" id="mainSeg" role="tablist">
+      <button class="seg-btn is-on" data-pane="files" role="tab">
+        <span class="seg-ic" data-icon="transfer"></span>传输
+      </button>
+      <button class="seg-btn" data-pane="chat" role="tab">
+        <span class="seg-ic" data-icon="chat"></span>聊天
+        <span class="seg-badge" id="chatUnreadBadge" hidden></span>
+      </button>
     </div>
 
-    <!-- 接收的文件 -->
-    <div class="card">
-      <div class="card-title"><span class="ct-ic" data-icon="inbox"></span>最近接收</div>
-      <ul class="recv-list" id="recvList"></ul>
-      <div class="empty" id="recvEmpty">还没有接收过文件。</div>
+    <!-- 文件传输面板 -->
+    <div class="pane is-on" data-pane="files" id="pane-files">
+      <!-- 进行中传输 -->
+      <div id="activeWrap"></div>
+
+      <!-- 发送区 -->
+      <div class="card">
+        <div class="card-title"><span class="ct-ic" data-icon="send"></span>发送到电脑</div>
+        <div class="send-grid">
+          <button class="tile" data-pick="image"><span class="tile-ic" data-icon="image"></span>图片</button>
+          <button class="tile" data-pick="video"><span class="tile-ic" data-icon="video"></span>视频</button>
+          <button class="tile" data-pick="doc"><span class="tile-ic" data-icon="doc"></span>文档</button>
+          <button class="tile" data-pick="any"><span class="tile-ic" data-icon="clip"></span>其他文件</button>
+        </div>
+        <div class="pick-preview" id="pickPreview"></div>
+        <button class="btn primary block" id="btnSend" disabled>选择要发送的内容</button>
+      </div>
+
+      <!-- 接收的文件 -->
+      <div class="card">
+        <div class="card-title"><span class="ct-ic" data-icon="inbox"></span>最近接收</div>
+        <ul class="recv-list" id="recvList"></ul>
+        <div class="empty" id="recvEmpty">还没有接收过文件。</div>
+      </div>
+    </div>
+
+    <!-- 聊天面板 -->
+    <div class="pane" data-pane="chat" id="pane-chat">
+      <div class="chat-day" id="chatDayHint">与电脑的对话仅在本机局域网内传输，不经过任何服务器。</div>
+      <div class="chat-timeline" id="chatTimeline"></div>
+      <div class="chat-empty" id="chatEmpty">
+        <div class="ce-ic" data-icon="chat"></div>
+        <div class="ce-title">还没有消息</div>
+        <div class="ce-sub">发条消息试试，也可以直接把文件当消息发过来。</div>
+      </div>
+      <div class="chat-composer">
+        <button class="chat-attach" id="btnChatAttach" aria-label="发送文件">
+          <span data-icon="plus"></span>
+        </button>
+        <textarea class="chat-input" id="chatInput" rows="1"
+          placeholder="输入消息…" maxlength="4000"
+          enterkeyhint="send" autocomplete="off"></textarea>
+        <button class="chat-send" id="btnChatSend" aria-label="发送" disabled>
+          <span data-icon="arrowUp"></span>
+        </button>
+      </div>
     </div>
 
     <button class="btn ghost block danger" id="btnDisconnect" style="margin-top:4px"><span class="btn-ico" data-icon="close"></span>断开连接</button>
@@ -174,6 +210,10 @@
       <div class="offer-from" id="offerFrom">来自 —</div>
       <ul class="offer-files" id="offerFiles"></ul>
       <div class="offer-sum" id="offerSum"></div>
+      <label class="offer-trust" id="offerTrustWrap">
+        <input type="checkbox" id="offerTrust" checked />
+        <span>接受后，本次会话中的后续文件自动接收，不再逐次询问</span>
+      </label>
       <div class="sheet-actions">
         <button class="btn ghost danger" id="btnReject"><span class="btn-ico" data-icon="close"></span>拒绝</button>
         <button class="btn primary" id="btnAccept"><span class="btn-ico" data-icon="download"></span>接收</button>

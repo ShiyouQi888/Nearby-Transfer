@@ -1,6 +1,6 @@
 {
   "name": "lan-transfer-desktop",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "description": "邻传 Nearby Transfer · 局域网跨设备文件互传工具",
   "author": "齐世有 <blacklaw@foxmail.com>",
@@ -67,7 +67,7 @@
       "identityName": "46CE527F.8840C56609D6",
       "applicationId": "NearbyTransfer",
       "publisher": "CN=95F923A1-AAA6-4D57-A381-A08EABD5CE8D",
-      "publisherDisplayName": "北京科技不有限责任公司",
+      "publisherDisplayName": "齐世有",
       "displayName": "邻传",
       "languages": [
         "zh-CN",

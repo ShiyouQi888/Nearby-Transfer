@@ -1,6 +1,8 @@
 package com.lantransfer.mobile;
 
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.util.Base64;
 import android.graphics.Color;
 import android.graphics.Canvas;
@@ -78,8 +80,9 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private ChatStore chatStore;
     private LinearLayout chatList;
     private ScrollView chatScroll;
-    private TextView chatHint, chatEmpty, chatPeerName, chatConnectionLabel;
+    private TextView chatEmpty, chatPeerName, chatConnectionLabel, headerSubtitle;
     private View chatOnlineDot;
+    private LinearLayout chatPeerHeader;
     private EditText chatInput;
     private Button chatSendButton;
     /** 与当前对端已读位点（本地视角）。 */
@@ -128,10 +131,25 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(Color.rgb(15, 18, 16));
         LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.VERTICAL); header.setPadding(dp(24), dp(18), dp(24), dp(10));
         LinearLayout headerTop = new LinearLayout(this); headerTop.setOrientation(LinearLayout.HORIZONTAL); headerTop.setGravity(Gravity.CENTER_VERTICAL);
-        headerTop.addView(text("邻传", 30, Color.WHITE), new LinearLayout.LayoutParams(0, dp(48), 1));
+        TextView brandTitle = text("邻传", 30, Color.WHITE);
+        headerTop.addView(brandTitle, new LinearLayout.LayoutParams(-2, dp(48)));
+        chatPeerHeader = new LinearLayout(this); chatPeerHeader.setOrientation(LinearLayout.HORIZONTAL); chatPeerHeader.setGravity(Gravity.CENTER_VERTICAL); chatPeerHeader.setVisibility(View.GONE);
+        chatPeerHeader.setPadding(dp(10), 0, dp(6), 0);
+        View headerPeerAvatar = new DeviceAvatar(false);
+        chatPeerHeader.addView(headerPeerAvatar, new LinearLayout.LayoutParams(dp(27), dp(27)));
+        LinearLayout peerInfo = new LinearLayout(this); peerInfo.setOrientation(LinearLayout.VERTICAL); peerInfo.setGravity(Gravity.CENTER_VERTICAL); peerInfo.setPadding(dp(7), 0, 0, 0);
+        chatPeerName = text(english ? "Paired computer" : "已配对的电脑", 13, Color.WHITE); chatPeerName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); chatPeerName.setSingleLine(true); chatPeerName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        peerInfo.addView(chatPeerName, new LinearLayout.LayoutParams(-1, dp(19)));
+        LinearLayout connectionLine = new LinearLayout(this); connectionLine.setOrientation(LinearLayout.HORIZONTAL); connectionLine.setGravity(Gravity.CENTER_VERTICAL);
+        chatOnlineDot = new View(this); chatOnlineDot.setBackground(box(Color.rgb(0, 220, 130), Color.rgb(0, 220, 130), dp(5))); connectionLine.addView(chatOnlineDot, new LinearLayout.LayoutParams(dp(5), dp(5)));
+        chatConnectionLabel = text(english ? "Online · LAN" : "在线 · 局域网直连", 10, Color.rgb(145, 163, 151)); chatConnectionLabel.setSingleLine(true); chatConnectionLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams headerConnectionParams = new LinearLayout.LayoutParams(0, dp(16), 1); headerConnectionParams.leftMargin = dp(5); connectionLine.addView(chatConnectionLabel, headerConnectionParams);
+        peerInfo.addView(connectionLine, new LinearLayout.LayoutParams(-1, dp(16)));
+        chatPeerHeader.addView(peerInfo, new LinearLayout.LayoutParams(0, dp(38), 1));
+        headerTop.addView(chatPeerHeader, new LinearLayout.LayoutParams(0, dp(44), 1));
         languageButton = compactLanguageButton(); headerTop.addView(languageButton, new LinearLayout.LayoutParams(dp(52), dp(36)));
         header.addView(headerTop, new LinearLayout.LayoutParams(-1, dp(48)));
-        header.addView(text("局域网高速互传", 14, Color.rgb(163, 167, 164)), new LinearLayout.LayoutParams(-1, dp(28)));
+        headerSubtitle = text("局域网高速互传", 14, Color.rgb(163, 167, 164)); header.addView(headerSubtitle, new LinearLayout.LayoutParams(-1, dp(28)));
         status = text("未连接", 14, Color.rgb(0, 232, 135)); status.setGravity(Gravity.CENTER_VERTICAL); header.addView(status, new LinearLayout.LayoutParams(-1, dp(36)));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
@@ -167,20 +185,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         LinearLayout chatHeader = new LinearLayout(this); chatHeader.setOrientation(LinearLayout.HORIZONTAL); chatHeader.setGravity(Gravity.CENTER_VERTICAL);
         Button chatBack = new Button(this); chatBack.setText("‹"); chatBack.setTextSize(30); chatBack.setAllCaps(false); chatBack.setTextColor(Color.WHITE); chatBack.setContentDescription(english ? "Back to pages" : "返回主页面"); chatBack.setPadding(0, 0, 0, dp(3)); chatBack.setBackgroundColor(Color.TRANSPARENT); chatBack.setOnClickListener(v -> showPage(0));
         LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(dp(34), dp(48)); backParams.setMargins(dp(-8), 0, dp(4), 0); chatHeader.addView(chatBack, backParams);
-        View peerAvatar = new DeviceAvatar(false);
-        chatHeader.addView(peerAvatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        LinearLayout peerInfo = new LinearLayout(this); peerInfo.setOrientation(LinearLayout.VERTICAL); peerInfo.setPadding(dp(11), 0, 0, 0);
-        chatPeerName = text(english ? "Paired computer" : "已配对的电脑", 16, Color.WHITE); chatPeerName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        peerInfo.addView(chatPeerName, new LinearLayout.LayoutParams(-1, dp(24)));
-        LinearLayout connectionLine = new LinearLayout(this); connectionLine.setOrientation(LinearLayout.HORIZONTAL); connectionLine.setGravity(Gravity.CENTER_VERTICAL);
-        chatOnlineDot = new View(this); chatOnlineDot.setBackground(box(Color.rgb(0, 220, 130), Color.rgb(0, 220, 130), dp(6))); connectionLine.addView(chatOnlineDot, new LinearLayout.LayoutParams(dp(7), dp(7)));
-        chatConnectionLabel = text(english ? "Local network · private chat" : "局域网连接 · 私密对话", 11, Color.rgb(145, 163, 151));
-        LinearLayout.LayoutParams connectionLabelParams = new LinearLayout.LayoutParams(-2, dp(20)); connectionLabelParams.leftMargin = dp(6); connectionLine.addView(chatConnectionLabel, connectionLabelParams);
-        peerInfo.addView(connectionLine, new LinearLayout.LayoutParams(-1, dp(20)));
-        chatHeader.addView(peerInfo, new LinearLayout.LayoutParams(0, -2, 1));
-        chatSection.addView(chatHeader, new LinearLayout.LayoutParams(-1, dp(58)));
-
-        chatHint = text(english ? "Messages stay on your local network — no cloud relay." : "消息仅通过本地局域网传输，不经过云端。", 11, Color.rgb(127, 145, 134)); chatHint.setPadding(dp(55), 0, 0, dp(8)); chatSection.addView(chatHint, new LinearLayout.LayoutParams(-1, dp(30)));
+        chatSection.addView(chatHeader, new LinearLayout.LayoutParams(-1, dp(42)));
         View headerDivider = new View(this); headerDivider.setBackgroundColor(Color.rgb(38, 46, 41)); chatSection.addView(headerDivider, new LinearLayout.LayoutParams(-1, dp(1)));
 
         FrameLayout timeline = new FrameLayout(this);
@@ -190,7 +195,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         timeline.addView(chatScroll, new FrameLayout.LayoutParams(-1, -1));
         chatEmpty = text(english ? "No messages yet\nSend a message to start the conversation." : "还没有消息\n发送一条消息，开始你们的对话。", 13, Color.rgb(127, 145, 134)); chatEmpty.setGravity(Gravity.CENTER); chatEmpty.setTextAlignment(View.TEXT_ALIGNMENT_CENTER); chatEmpty.setLineSpacing(dp(6), 1f); chatEmpty.setPadding(dp(24), dp(24), dp(24), dp(24));
         timeline.addView(chatEmpty, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams timelineParams = new LinearLayout.LayoutParams(-1, 0, 1); timelineParams.topMargin = dp(10); chatSection.addView(timeline, timelineParams);
+        LinearLayout.LayoutParams timelineParams = new LinearLayout.LayoutParams(-1, 0, 1); timelineParams.topMargin = dp(4); chatSection.addView(timeline, timelineParams);
 
         LinearLayout composer = new LinearLayout(this); composer.setOrientation(LinearLayout.HORIZONTAL); composer.setGravity(Gravity.CENTER_VERTICAL); composer.setPadding(0, 0, 0, 0);
         FrameLayout inputShell = new FrameLayout(this);
@@ -304,6 +309,11 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private void showPage(int index) {
         if (pageHost == null) return;
         activePageIndex = index;
+        boolean inChat = index == 2;
+        if (chatPeerHeader != null) chatPeerHeader.setVisibility(inChat ? View.VISIBLE : View.GONE);
+        if (headerSubtitle != null) headerSubtitle.setVisibility(inChat ? View.GONE : View.VISIBLE);
+        if (status != null) status.setVisibility(inChat ? View.GONE : View.VISIBLE);
+        if (inChat) updateChatHeader();
         if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
         if (chatBackCallback != null) chatBackCallback.setEnabled(index == 2);
         for (int i = 0; i < pageHost.getChildCount(); i++) pageHost.getChildAt(i).setVisibility(i == index ? View.VISIBLE : View.GONE);
@@ -390,7 +400,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
                 LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(dp(176), dp(132)); previewParams.bottomMargin = dp(7); bubble.addView(previewFrame, previewParams);
                 loadThumbnail(attachmentUri, preview, fallback, fileName); previewFrame.setOnClickListener(v -> openChatAttachment(message));
             }
-            TextView name = text(fileName, 14, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setMaxWidth(maxWidth); bubble.addView(name);
+            TextView name = text(fileName, 14, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setMaxWidth(maxWidth); name.setOnLongClickListener(v -> { copyChatMessage(message); return true; }); bubble.addView(name);
             TextView meta = text(glyphLabel(glyph) + "  ·  " + android.text.format.Formatter.formatShortFileSize(this, fileSize), 12, Color.rgb(163, 167, 164)); bubble.addView(meta);
             boolean done = message.optBoolean("done", false);
             boolean failed = message.optBoolean("failed", false);
@@ -409,8 +419,9 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         } else {
             TextView content = text(message.optString("text", ""), 15, Color.WHITE);
             content.setMaxWidth(maxWidth);
-            content.setLineSpacing(dp(2), 1f); bubble.addView(content);
+            content.setLineSpacing(dp(2), 1f); content.setOnLongClickListener(v -> { copyChatMessage(message); return true; }); bubble.addView(content);
         }
+        bubble.setOnLongClickListener(v -> { copyChatMessage(message); return true; });
 
         LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setGravity(out ? Gravity.RIGHT : Gravity.LEFT);
         body.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
@@ -422,6 +433,17 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         if (out) { bodyParams.rightMargin = dp(7); row.addView(body, bodyParams); row.addView(avatar, avatarParams); }
         else { avatarParams.rightMargin = dp(7); row.addView(avatar, avatarParams); row.addView(body, bodyParams); }
         return row;
+    }
+
+    private void copyChatMessage(org.json.JSONObject message) {
+        String content;
+        if ("file".equals(message.optString("kind", ""))) content = message.optString("fileName", "");
+        else content = message.optString("text", "");
+        if (content.trim().isEmpty()) return;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard == null) return;
+        clipboard.setPrimaryClip(ClipData.newPlainText(english ? "Message" : "聊天消息", content));
+        toast(english ? "Message copied" : "消息已复制");
     }
 
     /** 纯矢量默认头像：本机 Android 显示手机，对端按设备类型显示桌面电脑。 */

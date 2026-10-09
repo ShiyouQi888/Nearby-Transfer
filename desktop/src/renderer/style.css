@@ -1358,6 +1358,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .msg-meta .st { display: inline-flex; align-items: center; }
 .msg-meta .st.read { color: var(--ds-brand-bright); }
 .msg-meta .st.failed { color: #f2685b; }
+.msg-copy {
+  border: 0; padding: 0 2px; color: var(--ds-text-muted); background: transparent;
+  font: inherit; cursor: pointer; opacity: .72;
+}
+.msg-copy:hover, .msg-copy:focus-visible { color: var(--ds-brand-bright); opacity: 1; }
 .msg-retry {
   border: 0; background: transparent; color: #f2685b; cursor: pointer;
   font-size: 10.5px; text-decoration: underline; padding: 0;

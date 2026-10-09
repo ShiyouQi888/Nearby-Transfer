@@ -1167,6 +1167,8 @@ function messageHtml(m) {
   const out = m.dir === 'out';
   const avatarType = out ? 'desktop' : (CHAT.peerType === 'mobile' ? 'mobile' : 'desktop');
   const body = m.kind === 'file' ? fileCardHtml(m) : `<div class="bubble">${esc(m.text)}</div>`;
+  const copyLabel = window.LTP_I18N?.t('复制') || '复制';
+  const copyAria = window.LTP_I18N?.t('复制消息内容') || '复制消息内容';
   return `
     <div class="msg${out ? ' out' : ''}" data-msgid="${esc(m.msgId)}">
       <div class="msg-avatar" role="img" aria-label="${avatarType === 'mobile' ? '手机' : '电脑'}">${window.Icons.icon(avatarType, { size: 16, sw: 1.7 })}</div>
@@ -1175,6 +1177,7 @@ function messageHtml(m) {
         <div class="msg-meta">
           <span>${esc(chatTime(m.ts))}</span>
           ${out ? `<span class="st ${esc(m.status)}">${statusText(m.status)}</span>` : ''}
+          <button class="msg-copy" data-copy-message="${esc(m.msgId)}" aria-label="${esc(copyAria)}" title="${esc(copyAria)}">${esc(copyLabel)}</button>
           ${out && m.status === 'failed' ? `<button class="msg-retry" data-retry="${esc(m.msgId)}">重发</button>` : ''}
         </div>
       </div>
@@ -1221,6 +1224,21 @@ function fileCardHtml(m) {
 function bindMessageActions(root) {
   root.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => api.openPath(b.dataset.open)));
   root.querySelectorAll('[data-folder]').forEach((b) => b.addEventListener('click', () => api.showInFolder(b.dataset.folder)));
+  root.querySelectorAll('[data-copy-message]').forEach((b) => { b.onclick = async () => {
+    const message = (CHAT.messages.get(CHAT.activeId) || []).find((item) => item.msgId === b.dataset.copyMessage);
+    if (!message) return;
+    const files = message.attachment?.files || [];
+    const content = message.kind === 'file'
+      ? files.map((file) => file.name).filter(Boolean).join('\n') || message.text || ''
+      : message.text || '';
+    if (!content) return;
+    try {
+      await api.copyText(content);
+      toast(window.LTP_I18N?.t('消息内容已复制') || '消息内容已复制', 'ok');
+    } catch (_) {
+      toast('复制失败', 'err');
+    }
+  }; });
   root.querySelectorAll('[data-retry]').forEach((b) => b.addEventListener('click', async () => {
     const r = await api.retryChatMessage(CHAT.activeId, b.dataset.retry);
     if (!(r && r.ok)) toast(r && r.reason === 'offline' ? '对方当前不在线，稍后再试' : '重发失败', 'err');

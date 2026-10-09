@@ -78,13 +78,13 @@
 
 ## 下载与安装
 
-当前版本：**v1.1.2**
+当前版本：**v1.1.3**
 
 | 平台 | 下载 | 说明 |
 |---|---|---|
-| Windows | [Nearby-Transfer-Setup-1.1.2.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.2/Nearby-Transfer-Setup-1.1.2.exe) | Windows x64 安装包 |
-| Android | [Nearby-Transfer-Android-1.1.2.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.2/Nearby-Transfer-Android-1.1.2.apk) | Android 正式签名 APK |
-| Microsoft Store | [Nearby-Transfer-Store-1.1.2.msixupload](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.2/Nearby-Transfer-Store-1.1.2.msixupload) | Partner Center 提交包（商店审核/上架另行完成） |
+| Windows | [Nearby-Transfer-Setup-1.1.3.exe](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.3/Nearby-Transfer-Setup-1.1.3.exe) | Windows x64 安装包 |
+| Android | [Nearby-Transfer-Android-1.1.3.apk](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.3/Nearby-Transfer-Android-1.1.3.apk) | Android 正式签名 APK |
+| Microsoft Store | [Nearby-Transfer-Store-1.1.3.msixupload](https://github.com/ShiyouQi888/Nearby-Transfer/releases/download/v1.1.3/Nearby-Transfer-Store-1.1.3.msixupload) | Partner Center 提交包（商店审核/上架另行完成） |
 
 ### 使用前提
 

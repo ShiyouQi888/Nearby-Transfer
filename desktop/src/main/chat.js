@@ -139,6 +139,7 @@ class ChatStore {
           deviceId: peerId,
           name: (peer && peer.name) || peerId,
           type: (peer && peer.type) || 'desktop',
+          avatarData: (peer && peer.avatarData) || '',
         },
         lastMessage: null,
         unread: 0,
@@ -158,7 +159,11 @@ class ChatStore {
       let changed = false;
       if (peer.name && peer.name !== chat.peer.name) { chat.peer.name = peer.name; changed = true; }
       if (peer.type && peer.type !== chat.peer.type) { chat.peer.type = peer.type; changed = true; }
-      if (changed) this._saveIndex();
+      if (peer.avatarData && peer.avatarData !== chat.peer.avatarData) { chat.peer.avatarData = peer.avatarData; changed = true; }
+      if (changed) {
+        this._saveIndex();
+        this.onChange({ kind: 'chat:updated', chat });
+      }
     }
     return chat;
   }
@@ -175,6 +180,16 @@ class ChatStore {
 
   get(peerId) {
     return this.chats.get(peerId) || null;
+  }
+
+  setAlias(peerId, alias) {
+    const chat = this.chats.get(String(peerId || ''));
+    if (!chat) return null;
+    chat.alias = String(alias || '').trim().slice(0, 40);
+    chat.updatedAt = Date.now();
+    this._saveIndex();
+    this.onChange({ kind: 'chat:updated', chat });
+    return chat;
   }
 
   /** 用户点了「接受会话」——此后该会话的文件静默接收 */
@@ -254,7 +269,7 @@ class ChatStore {
     if (list.length > MESSAGES_PER_CHAT) list.splice(0, list.length - MESSAGES_PER_CHAT);
     this._saveMessages(peerId);
 
-    const chat = this.openChat({ deviceId: peerId, name: message.peerName, type: message.peerType });
+    const chat = this.openChat({ deviceId: peerId, name: message.peerName, type: message.peerType, avatarData: message.peerAvatarData });
     chat.lastMessage = {
       msgId: rec.msgId,
       kind: rec.kind,

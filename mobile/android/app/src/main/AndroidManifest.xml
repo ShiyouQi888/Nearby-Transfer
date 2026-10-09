@@ -17,6 +17,16 @@
         <meta-data android:name="com.lantransfer.DEVELOPER_GITHUB" android:value="https://github.com/ShiyouQi888/Nearby-Transfer" />
         <meta-data android:name="com.lantransfer.COPYRIGHT" android:value="Copyright © 2026 齐世有" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:name=".MainActivity"
@@ -32,6 +42,12 @@
             </intent-filter>
 
         </activity>
+
+        <service
+            android:name=".GroupHostService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
@@ -49,5 +65,9 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 </manifest>

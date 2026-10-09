@@ -32,6 +32,10 @@ const P = require('../../../shared/protocol.js');
 const { Discovery, listLocalIPv4 } = require('./discovery.js');
 const { TransferServer } = require('./server.js');
 const { ChatStore } = require('./chat.js');
+const { GroupStore } = require('./groups.js');
+const { GroupHub } = require('./group-hub.js');
+const { GroupClient } = require('./group-client.js');
+const { resolveGroupCode } = require('./group-invite.js');
 
 // Windows 通知使用稳定的应用标识，避免系统显示为 electron.app.*。
 if (process.platform === 'win32') app.setAppUserModelId('com.lantransfer.desktop');
@@ -118,6 +122,7 @@ let STORE = {
   deviceId: null,
   deviceSecret: null,
   deviceName: null,
+  avatarData: null,
   saveDir: null,
   trusted: [],          // [{deviceId,name,type,fingerprint,trustedAt,lastSeenAt}]
   history: [],          // 传输历史
@@ -164,12 +169,87 @@ let tray = null;
 let discovery = null;
 let server = null;
 let chatStore = null;
+let groupStore = null;
+let groupHub = null;
+const groupClients = new Map();
+const groupFileReceivers = new Map();
 let selfDevice = null;
 
+function safeGroupFileName(name) {
+  const value = path.basename(String(name || '文件')).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim();
+  return (value || '文件').slice(0, 180);
+}
+
+function uniqueGroupFilePath(name) {
+  const dir = STORE.saveDir || path.join(app.getPath('downloads'), 'Nearby Transfer');
+  fs.mkdirSync(dir, { recursive: true });
+  const clean = safeGroupFileName(name); const ext = path.extname(clean); const stem = clean.slice(0, clean.length - ext.length);
+  let target = path.join(dir, clean), index = 1;
+  while (fs.existsSync(target)) target = path.join(dir, `${stem} (${index++})${ext}`);
+  return target;
+}
+
+function appendGroupFileMessage(event, filePath) {
+  const group = groupStore && groupStore.get(event.groupId); if (!group) return;
+  const message = {
+    msgId: `group-file-${event.transferId}`,
+    senderId: event.senderId, senderName: event.senderName || event.senderId,
+    kind: 'file', text: '', ts: Date.now(), status: 'done', fileName: event.name,
+    attachment: { transferId: event.transferId, files: [{ fileId: event.fileId, name: event.name, size: event.size, mime: event.mime, path: filePath }], totalBytes: event.size, transferredBytes: event.size, localPaths: [filePath] },
+  };
+  groupStore.append(event.groupId, message, { unread: event.senderId !== STORE.deviceId });
+  pushToRenderer('ltp:groupevent', { kind: 'group:file', groupId: event.groupId, message });
+}
+
+function handleHostedGroupFile(event) {
+  if (!event || event.senderId === STORE.deviceId) return;
+  const key = `${event.groupId}:${event.transferId}`;
+  if (event.type === 'file_start') {
+    const filePath = uniqueGroupFilePath(event.name);
+    const stream = fs.createWriteStream(filePath);
+    groupFileReceivers.set(key, { ...event, filePath, stream, received: 0 });
+  } else if (event.type === 'file_chunk') {
+    const receiver = groupFileReceivers.get(key); if (!receiver) return;
+    const data = Buffer.from(event.data, 'base64'); receiver.stream.write(data); receiver.received += data.length;
+  } else if (event.type === 'file_end') {
+    const receiver = groupFileReceivers.get(key); if (!receiver) return;
+    groupFileReceivers.delete(key); receiver.stream.end(() => appendGroupFileMessage(receiver, receiver.filePath));
+  }
+}
+
 const FIREWALL_RULES = [
-  { name: 'Nearby Transfer TCP 53317', protocol: 'TCP' },
-  { name: 'Nearby Transfer UDP 53317', protocol: 'UDP' },
+  { name: 'Nearby Transfer TCP 53317', protocol: 'TCP', port: 53317 },
+  { name: 'Nearby Transfer UDP 53317', protocol: 'UDP', port: 53317 },
+  { name: 'Nearby Transfer Group TCP 53318 v2', protocol: 'TCP', port: 53318 },
+  { name: 'Nearby Transfer Group Discovery UDP 53300', protocol: 'UDP', port: 53300 },
 ];
+
+function attachGroupClient(group, invite) {
+  const old = groupClients.get(group.id); if (old) old.close();
+  const client = new GroupClient({ invite, deviceId: STORE.deviceId, name: STORE.deviceName, avatarData: STORE.avatarData || '' }); groupClients.set(group.id, client);
+  const reconnect = () => {
+    if (groupClients.get(group.id) !== client || client.retryTimer) return;
+    client.retryDelay = Math.min(client.retryDelay ? client.retryDelay * 2 : 1500, 30000);
+    client.retryTimer = setTimeout(() => {
+      client.retryTimer = null;
+      client.connect().then(() => { client.retryDelay = 1500; }).catch(reconnect);
+    }, client.retryDelay);
+  };
+  client.on('joined', (remote) => {
+    if (Array.isArray(remote?.members)) groupStore.setMembers(group.id, remote.members);
+    for (const message of remote?.messages || []) groupStore.append(group.id, message);
+    pushToRenderer('ltp:groupevent', { kind: 'group:online', groupId: group.id });
+  });
+  client.on('message', (msg) => {
+    if (msg.type === 'message' && msg.message) groupStore.append(group.id, msg.message, { unread: true });
+    else if (msg.type === 'members') groupStore.setMembers(group.id, msg.members);
+    else if (msg.type === 'file_start' || msg.type === 'file_chunk' || msg.type === 'file_end') handleHostedGroupFile(msg);
+    else if (msg.type === 'removed' || msg.type === 'dissolved') { groupStore.remove(group.id); client.close(); groupClients.delete(group.id); }
+  });
+  client.on('close', () => { pushToRenderer('ltp:groupevent', { kind: 'group:offline', groupId: group.id }); reconnect(); });
+  client.on('connectionError', () => { pushToRenderer('ltp:groupevent', { kind: 'group:offline', groupId: group.id }); reconnect(); });
+  return client.connect().catch((error) => { reconnect(); throw error; });
+}
 
 function execFileAsync(file, args) {
   return new Promise((resolve, reject) => {
@@ -206,7 +286,7 @@ async function ensureFirewallRules() {
   if (!missing.length) return { ok: true, changed: false, status: 'ready' };
 
   const commands = missing.map((rule) =>
-    `netsh advfirewall firewall add rule name="${rule.name}" dir=in action=allow protocol=${rule.protocol} localport=${P.PORT} profile=private,domain enable=yes`
+    `netsh advfirewall firewall add rule name="${rule.name}" dir=in action=allow protocol=${rule.protocol} localport=${rule.port} profile=private,domain enable=yes`
   ).join(' && ');
   // 由 PowerShell 仅负责触发一次管理员 UAC，真正的规则由提升后的 cmd 执行。
   const script = `$p = Start-Process -FilePath 'cmd.exe' -Verb RunAs -ArgumentList @('/d','/s','/c',${JSON.stringify(commands)}) -Wait -PassThru; exit $p.ExitCode;`;
@@ -230,6 +310,7 @@ function buildSelf() {
     port: P.PORT,
     fingerprint: P.makeFingerprint(STORE.deviceSecret),
     pairingRequired: true,
+    avatarData: STORE.avatarData || '',
   };
   return selfDevice;
 }
@@ -247,6 +328,17 @@ function startServices() {
     onChange: (ev) => pushToRenderer('ltp:chatevent', ev),
   });
 
+  groupStore = new GroupStore(CONFIG_DIR, (ev) => {
+    const group = ev.group;
+    if (!group) { pushToRenderer('ltp:groupevent', ev); return; }
+    const { token, inviteCode, inviteExpiresAt, messages, ...safeGroup } = group;
+    pushToRenderer('ltp:groupevent', { ...ev, group: safeGroup, message: ev.message || null });
+  });
+  for (const group of groupStore.list()) if (group.ownerId === STORE.deviceId && (!group.inviteCode || group.inviteExpiresAt <= Date.now())) {
+    let code; do { code = P.makePairCode(); } while (groupStore.list().some((item) => item.id !== group.id && item.inviteCode === code));
+    groupStore.updateInvite(group.id, code);
+  }
+
   // ── 传输服务
   server = new TransferServer({
     self: selfDevice,
@@ -256,6 +348,13 @@ function startServices() {
     trusted: STORE.trusted.map((t) => [t.deviceId, t]),
     chatStore,
   });
+
+  groupHub = new GroupHub({ store: groupStore, deviceId: STORE.deviceId, name: STORE.deviceName });
+  groupHub.on('error', (error) => pushToRenderer('ltp:event', { ev: 'group:error', payload: { message: String(error.message || error) } }));
+  groupHub.on('file', handleHostedGroupFile);
+  groupHub.listen().then(() => {
+    for (const group of groupStore.list()) if (group.ownerId !== STORE.deviceId && group.host && group.token) attachGroupClient(group, group).catch(() => {});
+  }).catch((error) => pushToRenderer('ltp:event', { ev: 'group:error', payload: { message: String(error.message || error) } }));
 
   // 转发全部事件给渲染层
   const forward = [
@@ -617,7 +716,20 @@ function registerIpc() {
     buildSelf();
     if (discovery) { discovery.self = selfDevice; discovery.announce(); }
     if (server) server.self = selfDevice;
+    if (groupHub) groupHub.name = n;
     return { ok: true, name: n };
+  });
+
+  ipcMain.handle('ltp:setAvatar', (e, avatarData) => {
+    const value = String(avatarData || '');
+    if (value && (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value) || value.length > 24000)) return { ok: false, reason: 'invalid_image' };
+    STORE.avatarData = value || null;
+    saveStore();
+    buildSelf();
+    if (discovery) { discovery.self = selfDevice; discovery.announce(); }
+    if (server) server.self = selfDevice;
+    if (server) for (const session of server.sessions.values()) if (session.paired) session.send(P.makeMessage(P.MSG.PROFILE_UPDATE, { device: selfDevice }, STORE.deviceId));
+    return { ok: true, avatarData: STORE.avatarData || '' };
   });
 
   // 保存目录
@@ -737,6 +849,87 @@ function registerIpc() {
 
   // ── 聊天 ───────────────────────────────────────────────
   ipcMain.handle('ltp:getChats', () => (chatStore ? chatStore.summary() : []));
+  ipcMain.handle('ltp:getGroups', () => (groupStore ? groupStore.list().map(({ token, inviteCode, inviteExpiresAt, ...g }) => ({
+    ...g, online: g.ownerId === STORE.deviceId ? !!groupHub?.server?.listening : !!groupClients.get(g.id)?.joined,
+  })) : []));
+  ipcMain.handle('ltp:markGroupRead', (e, groupId) => !!(groupStore && groupStore.setUnread(String(groupId || ''), 0)));
+  ipcMain.handle('ltp:createGroup', (e, name) => {
+    if (!groupStore || !groupHub?.server?.listening || !groupHub.discovery) return { ok: false, reason: 'unavailable' };
+    const title = String(name || '').trim().slice(0, 48);
+    if (!title) return { ok: false, reason: 'empty_name' };
+    const occupied = new Set(groupStore.list().map((g) => g.inviteCode)); let code;
+    do { code = P.makePairCode(); } while (occupied.has(code));
+    const group = groupStore.create({ id: crypto.randomUUID(), name: title, ownerId: STORE.deviceId, ownerName: STORE.deviceName, ownerAvatarData: STORE.avatarData || '', host: groupHub._primaryIp(), port: groupHub.port, token: crypto.randomBytes(32).toString('hex'), inviteCode: code, inviteExpiresAt: Date.now() + 10 * 60 * 1000 });
+    return group ? { ok: true, group: (({ token, inviteCode, inviteExpiresAt, ...g }) => g)(group), invite: { code, expiresAt: group.inviteExpiresAt } } : { ok: false };
+  });
+  ipcMain.handle('ltp:getGroupInvite', (e, groupId) => {
+    const group = groupStore && groupStore.get(String(groupId || ''));
+    return group && group.ownerId === STORE.deviceId ? { code: group.inviteCode, expiresAt: group.inviteExpiresAt } : null;
+  });
+  ipcMain.handle('ltp:refreshGroupInvite', (e, groupId) => {
+    const group = groupStore && groupStore.get(String(groupId || ''));
+    if (!group || group.ownerId !== STORE.deviceId) return null;
+    const occupied = new Set(groupStore.list().filter((g) => g.id !== group.id).map((g) => g.inviteCode)); let code;
+    do { code = P.makePairCode(); } while (occupied.has(code));
+    const updated = groupStore.updateInvite(group.id, code);
+    return updated && { code: updated.inviteCode, expiresAt: updated.inviteExpiresAt };
+  });
+  ipcMain.handle('ltp:joinGroup', async (e, rawInvite) => {
+    if (!groupStore) return { ok: false, reason: 'unavailable' };
+    let invite;
+    try {
+      if (/^\d{6}$/.test(String(rawInvite || '').trim())) invite = await resolveGroupCode(String(rawInvite).trim());
+      else { invite = typeof rawInvite === 'string' ? JSON.parse(rawInvite) : rawInvite; }
+    } catch (error) { return { ok: false, reason: String(error.message || error) }; }
+    if (!invite || invite.scheme !== 'nearby-group-v1' || !invite.groupId || !invite.token || !invite.host) return { ok: false, reason: 'invalid_code' };
+    const group = groupStore.join({ ...invite, ownerId: invite.ownerId, members: [] });
+    if (!group) return { ok: false, reason: 'invalid_code' };
+    try { const result = await attachGroupClient(group, invite); groupStore.setMembers(group.id, result.members || []); return { ok: true, group: result }; }
+    catch (error) { groupClients.delete(group.id); return { ok: false, reason: String(error.message || error) }; }
+  });
+  ipcMain.handle('ltp:sendGroupText', (e, { groupId, text } = {}) => {
+    const group = groupStore && groupStore.get(String(groupId || '')); if (!group) return { ok: false, reason: 'not_found' };
+    if (group.ownerId === STORE.deviceId) return { ok: !!groupHub.sendLocal(group.id, text) };
+    const client = groupClients.get(group.id);
+    const ok = !!(client && client.sendText(text));
+    return { ok, reason: ok ? null : 'offline' };
+  });
+  ipcMain.handle('ltp:sendGroupFiles', async (e, { groupId, paths: filePaths } = {}) => {
+    const id = String(groupId || ''), group = groupStore && groupStore.get(id), files = Array.isArray(filePaths) ? filePaths : [];
+    const filePath = files[0]; if (!group || !filePath || files.length !== 1) return { ok: false, reason: 'single_file_only' };
+    let stat; try { stat = await fs.promises.stat(filePath); } catch (_) { return { ok: false, reason: 'file_not_found' }; }
+    if (!stat.isFile() || stat.size > 100 * 1024 * 1024) return { ok: false, reason: 'file_too_large' };
+    const transferId = `g_${crypto.randomUUID()}`, fileId = `f_${crypto.randomUUID()}`, name = safeGroupFileName(path.basename(filePath));
+    const mime = 'application/octet-stream'; const meta = { groupId: id, transferId, fileId, name, size: stat.size, mime, senderId: STORE.deviceId, senderName: STORE.deviceName };
+    try {
+      if (group.ownerId === STORE.deviceId) {
+        groupHub.sendFileMessage(id, { type: 'file_start', ...meta });
+        const input = fs.createReadStream(filePath, { highWaterMark: 6144 }); let seq = 0;
+        for await (const chunk of input) groupHub.sendFileMessage(id, { type: 'file_chunk', ...meta, seq: seq++, data: chunk.toString('base64') });
+        groupHub.sendFileMessage(id, { type: 'file_end', ...meta });
+      } else {
+        const client = groupClients.get(id); if (!client || !client.joined || !(await client.sendFile(filePath, meta))) return { ok: false, reason: 'offline' };
+      }
+      appendGroupFileMessage(meta, filePath);
+      return { ok: true, transferId };
+    } catch (error) { return { ok: false, reason: String(error.message || error) }; }
+  });
+  ipcMain.handle('ltp:removeGroupMember', (e, { groupId, deviceId } = {}) => {
+    const group = groupStore && groupStore.get(String(groupId || '')); if (!group) return { ok: false };
+    if (group.ownerId === STORE.deviceId) return { ok: groupHub.removeMember(group.id, String(deviceId || '')) };
+    const client = groupClients.get(group.id); if (client) client.removeMember(String(deviceId || ''));
+    return { ok: !!client };
+  });
+  ipcMain.handle('ltp:dissolveGroup', (e, groupId) => {
+    const group = groupStore && groupStore.get(String(groupId || '')); if (!group) return { ok: false };
+    if (group.ownerId === STORE.deviceId) return { ok: groupHub.dissolve(group.id) };
+    const client = groupClients.get(group.id); if (client) client.dissolve(); return { ok: !!client };
+  });
+  ipcMain.handle('ltp:leaveGroup', (e, groupId) => {
+    const id = String(groupId || ''), client = groupClients.get(id);
+    if (!client) return { ok: false };
+    client.leave(); client.close(); groupClients.delete(id); groupStore.remove(id); return { ok: true };
+  });
   ipcMain.handle('ltp:getChatMessages', (e, { peerId, before, limit } = {}) =>
     (chatStore ? chatStore.list(String(peerId || ''), { before, limit }) : { messages: [], hasMore: false }));
 
@@ -819,6 +1012,12 @@ function registerIpc() {
 
   ipcMain.handle('ltp:clearChat', (e, peerId) => (chatStore ? chatStore.clear(String(peerId || '')) : { ok: false }));
   ipcMain.handle('ltp:deleteChat', (e, peerId) => (chatStore ? chatStore.deleteChat(String(peerId || '')) : { ok: false }));
+  ipcMain.handle('ltp:setChatAlias', (e, { peerId, alias } = {}) => {
+    const id = String(peerId || '');
+    if (chatStore && id) chatStore.openChat({ deviceId: id });
+    const chat = chatStore && chatStore.setAlias(id, alias);
+    return chat ? { ok: true, chat } : { ok: false };
+  });
 
   /** 重发一条 pending 的出站消息（对端重新上线后） */
   ipcMain.handle('ltp:retryChatMessage', async (e, { peerId, msgId } = {}) => {
@@ -917,6 +1116,9 @@ if (!gotLock) {
     app.isQuitting = true;
     if (discovery) discovery.stop();
     if (server) server.close();
+    if (groupHub) groupHub.close();
+    for (const client of groupClients.values()) client.close();
+    groupClients.clear();
     saveStore();
   });
 }

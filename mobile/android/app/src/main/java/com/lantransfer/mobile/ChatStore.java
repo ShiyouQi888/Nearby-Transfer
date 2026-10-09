@@ -8,6 +8,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -30,6 +31,7 @@ class ChatStore {
     static final int MESSAGES_PER_CHAT = 500;
 
     private static final String PREFS = "nearby_transfer_chats";
+    private static final String PEER_INDEX = "peer_index";
 
     private final SharedPreferences prefs;
 
@@ -40,6 +42,14 @@ class ChatStore {
     private static String keyFor(String peerId) {
         // SharedPreferences 的 key 可以做任意字符串，这里做一层清洗避免奇怪字符。
         return "msgs_" + (peerId == null ? "unknown" : peerId.replaceAll("[^A-Za-z0-9_-]", "_"));
+    }
+
+    synchronized String alias(String peerId) { return prefs.getString("alias_" + (peerId == null ? "unknown" : peerId.replaceAll("[^A-Za-z0-9_-]", "_")), ""); }
+
+    synchronized void setAlias(String peerId, String alias) {
+        String key = "alias_" + (peerId == null ? "unknown" : peerId.replaceAll("[^A-Za-z0-9_-]", "_"));
+        String value = alias == null ? "" : alias.trim();
+        if (value.isEmpty()) prefs.edit().remove(key).apply(); else prefs.edit().putString(key, value.substring(0, Math.min(40, value.length()))).apply();
     }
 
     /** 读取与某对端的全部消息（按时间升序）。 */
@@ -56,12 +66,36 @@ class ChatStore {
         return out;
     }
 
+    /** Lists current and older conversations, including histories written before the index existed. */
+    synchronized List<String> peerIds() {
+        LinkedHashSet<String> peers = new LinkedHashSet<>();
+        try {
+            JSONArray saved = new JSONArray(prefs.getString(PEER_INDEX, "[]"));
+            for (int i = 0; i < saved.length(); i++) {
+                String peer = saved.optString(i, "");
+                if (!peer.isEmpty()) peers.add(peer);
+            }
+        } catch (Exception ignored) { }
+        for (String key : prefs.getAll().keySet()) {
+            if ("msgs_unknown".equals(key)) peers.add("unknown");
+            else if (key.startsWith("msgs_host-")) {
+                String legacy = key.substring("msgs_".length());
+                if (legacy.matches("host-\\d{1,3}(?:_\\d{1,3}){3}")) peers.add(legacy.replace('_', '.'));
+            }
+        }
+        return new ArrayList<>(peers);
+    }
+
     private synchronized void persist(String peerId, List<JSONObject> messages) {
         try {
             JSONArray array = new JSONArray();
             int from = Math.max(0, messages.size() - MESSAGES_PER_CHAT);
             for (int i = from; i < messages.size(); i++) array.put(messages.get(i));
-            prefs.edit().putString(keyFor(peerId), array.toString()).apply();
+            JSONArray index = new JSONArray(prefs.getString(PEER_INDEX, "[]"));
+            boolean known = false;
+            for (int i = 0; i < index.length(); i++) if (peerId.equals(index.optString(i))) { known = true; break; }
+            if (!known) index.put(peerId);
+            prefs.edit().putString(keyFor(peerId), array.toString()).putString(PEER_INDEX, index.toString()).apply();
         } catch (Exception ignored) { }
     }
 

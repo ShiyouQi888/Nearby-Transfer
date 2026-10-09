@@ -3,7 +3,14 @@
 /* Lightweight bilingual UI layer. The selected language is persisted locally so
  * the renderer and all dynamically inserted pages use the same language. */
 (function () {
+  // Light is the safer first-run default for a desktop productivity tool;
+  // an explicit dark-mode choice is still preserved across launches.
+  const savedTheme = localStorage.getItem('ltp.theme') === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = savedTheme;
   const dict = {
+    '确认操作': 'Confirm action', '解散后所有成员都会被移出群聊，且无法恢复。': 'Dissolving removes all members and cannot be undone.', '退出后将停止接收此群聊的新消息。': 'You will stop receiving new messages from this group.', '创建失败，请确认群聊端口可用': 'Could not create the group. Check that the group port is available.',
+    '已允许局域网访问端口 53317、53318、53300': 'LAN access is allowed on ports 53317, 53318 and 53300',
+    '新建群聊': 'Create group', '加入群聊': 'Join group', '创建一个局域网群聊，口令仅在同一网络中可用。': 'Create a group on your LAN. The invite code works only on the same network.', '输入群主分享的 6 位口令，自动查找局域网中的群主。': 'Enter the 6-digit code to find the host on your local network.', '群聊名称': 'Group name', '给群聊起个名字': 'Name this group', '6 位邀请口令': '6-digit invite code', '输入群主分享的 6 位数字': 'Enter the 6-digit code from the host', '创建群聊': 'Create group', '查找并加入': 'Find and join', '让对方在同一局域网内输入此口令加入': 'They can enter this code to join from the same LAN', '群聊已创建': 'Group created', '口令有效期 10 分钟 · 仅限同一局域网': 'Code expires in 10 minutes · same LAN only', '口令 10 分钟后失效': 'Code expires in 10 minutes', '口令还剩 ': 'Expires in ', ' 分钟 · 仅限同一局域网': ' min · same LAN only', '口令已过期 · 请刷新后继续': 'Code expired · refresh to continue', '刷新口令': 'Refresh code', '复制口令': 'Copy code', '群聊管理': 'Group management', '显示邀请口令': 'Show invite code', '刷新邀请口令': 'Refresh invite code', '移除成员': 'Remove member', '退出群聊': 'Leave group', '解散群聊': 'Dissolve group', '位成员 · 本机主持': 'members · hosted here', '位成员 · 群主主持': 'members · hosted by owner', '群聊口令已复制': 'Group code copied', '口令已刷新，旧口令失效': 'Code refreshed; the old code no longer works', '请输入完整的 6 位数字口令': 'Enter the full 6-digit code', '正在查找…': 'Searching…', '已加入群聊': 'Joined group', '口令无效或已过期，请确认双方在同一局域网并向群主索取新口令': 'Invalid or expired code. Make sure both devices are on the same LAN and ask the host for a new code',
     '邻传 · Nearby Transfer': 'Nearby Transfer', '邻传': 'Nearby Transfer', '连接': 'Connect', '发送': 'Send', '运行中': 'Running', '正在启动…': 'Starting…', '刷新': 'Refresh', '设置': 'Settings', '最小化': 'Minimize', '最大化': 'Maximize', '关闭': 'Close', '折叠侧栏': 'Collapse sidebar', '展开侧栏': 'Expand sidebar',
     '连接与设备': 'Connection & devices', '设备': 'Devices', '配对': 'Pairing', '传输中心': 'Transfer center', '传输': 'Transfers', '接收': 'Receive', '记录与管理': 'Records & management', '历史': 'History', '历史设备': 'Trusted devices', '软件': 'Software', '关于': 'About', '简单 · 安全 · 高效': 'Simple · Secure · Fast', '让文件在设备间自由流动': 'Move files freely between devices',
     '在线设备': 'Online devices', '发现同一 Wi-Fi 下的设备，自动扫描并显示可连接的设备。': 'Discover devices on the same Wi-Fi network.', '当前网络：': 'Current network:', '自动': 'Auto', '扫描网络': 'Scan network', '或指定网段 192.168.1.1-254': 'Or specify range 192.168.1.1-254', '扫描中…': 'Scanning…', '暂无发现在线设备': 'No online devices found', '请确保手机与电脑连接到同一 Wi-Fi 网络': 'Make sure your phone and computer use the same Wi-Fi network',
@@ -33,10 +40,29 @@
     '下载 Android APK': 'Download Android APK',
     '打开 GitHub Releases': 'Open GitHub Releases',
     '重试获取': 'Retry',
-    '暂时无法获取下载信息，请稍后重试或查看 Releases。': 'Download information is unavailable. Try again later or view Releases.'
+    '暂时无法获取下载信息，请稍后重试或查看 Releases。': 'Download information is unavailable. Try again later or view Releases.',
+    '聊天': 'Chat', '会话': 'Conversations', '单聊': 'Direct chat', '群聊': 'Group chat', '在线设备': 'Online devices', '设置设备备注': 'Set device nickname', '管理群聊': 'Manage group',
+    '还没有会话。在下方选择一个在线设备开始聊天。': 'No conversations yet. Choose an online device below to start chatting.',
+    '选择一个会话': 'Select a conversation', '支持发送文字消息，也可以直接在对话里发送文件': 'Send text messages or files directly in the conversation',
+    '松手即可发送文件': 'Release to send files', '备注': 'Nickname', '管理群聊': 'Manage group', '清空': 'Clear',
+    '输入消息，按 Enter 发送…': 'Type a message and press Enter to send…', '新建单聊': 'New direct chat', '新建或加入群聊': 'Create or join a group',
+    '选择在线设备发起会话': 'Choose an online device to start a conversation', '还没有消息，发送第一条吧': 'No messages yet. Send the first one.',
+    '暂无消息': 'No messages', '我：': 'Me: ', '[文件]': '[File]', '手机': 'Phone', '电脑': 'Computer', '已连接': 'Connected', '未连接': 'Not connected',
+    '离线 · 等待重连': 'Offline · reconnecting', '已连接 · 等待重连': 'Connected · waiting to reconnect', '当前没有在线设备': 'No online devices',
+    '当前没有在线设备，请先在「连接」页扫描': 'No online devices. Scan from the Connect page first.', '已发送': 'Sent', '已送达': 'Delivered', '已读': 'Read',
+    '未送达': 'Not delivered', '发送中': 'Sending', '发送失败': 'Failed to send', '文件': 'File', '个文件': ' file(s)', '已完成': 'Completed', '已中断': 'Interrupted',
+    '打开': 'Open', '定位': 'Show in folder', '重发': 'Resend', '复制失败': 'Copy failed', '对方当前不在线，稍后再试': 'The other device is offline. Try again later.',
+    '群主离线，消息未发送': 'The group host is offline. Message not sent.', '对方不在线，消息已保留为未送达': 'The other device is offline. The message was saved as not delivered.',
+    '发送失败': 'Send failed', '发送文件': 'Send file', '对方不在线，无法发送文件': 'The other device is offline. File not sent.',
+    '文件发送失败：': 'File send failed: ', '已在会话中发送 ': 'Sent ', ' 个文件': ' file(s) in the conversation', '文件读取失败': 'Could not read the file',
+    '无法刷新口令': 'Could not refresh the code', '无法刷新口令': 'Could not refresh the code', '已清空当前会话': 'Conversation cleared',
+    '为这台设备设置备注（留空恢复设备原名）': 'Set a nickname for this device (leave empty to restore its name)', '设备备注已保存': 'Device nickname saved',
+    '已恢复设备原名': 'Original device name restored', '读取拖入文件失败，请重试或使用附件按钮选择文件': 'Could not read the dropped files. Try again or use the attachment button.',
+    '群聊口令已复制': 'Group code copied', '口令已刷新，旧口令失效': 'Code refreshed; the old code no longer works',
+    '界面主题': 'Appearance', '深色模式': 'Dark mode', '浅色模式': 'Light mode', '跟随系统': 'Follow system', '浅色模式已启用': 'Light mode enabled', '深色模式已启用': 'Dark mode enabled'
   });
   const replacements = Object.keys(dict).sort((a, b) => b.length - a.length);
-  const state = { lang: localStorage.getItem('ltp.language') || 'zh-CN' };
+  const state = { lang: localStorage.getItem('ltp.language') || 'zh-CN', theme: savedTheme };
   function t(value) {
     if (state.lang !== 'en-US' || value == null) return value;
     let out = String(value);
@@ -52,7 +78,12 @@
     root.querySelectorAll('[placeholder],[title],[aria-label],[alt]').forEach((el) => ['placeholder', 'title', 'aria-label', 'alt'].forEach((attr) => { if (el.hasAttribute(attr)) el.setAttribute(attr, t(el.getAttribute(attr))); }));
   }
   function setLanguage(lang) { state.lang = lang === 'en-US' ? 'en-US' : 'zh-CN'; localStorage.setItem('ltp.language', state.lang); location.reload(); }
-  window.LTP_I18N = { t, apply, setLanguage, getLanguage: () => state.lang };
+  function setTheme(theme) {
+    state.theme = theme === 'light' ? 'light' : 'dark';
+    localStorage.setItem('ltp.theme', state.theme);
+    document.documentElement.dataset.theme = state.theme;
+  }
+  window.LTP_I18N = { t, apply, setLanguage, getLanguage: () => state.lang, setTheme, getTheme: () => state.theme };
   function bindTopLanguage() {
     const control = document.getElementById('topLanguage');
     if (!control || control.dataset.bound === '1') return;

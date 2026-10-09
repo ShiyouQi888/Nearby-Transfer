@@ -151,6 +151,7 @@ class Discovery extends EventEmitter {
       protocol: P.PROTOCOL_ID,
       pairingRequired: this.self.pairingRequired !== false,
       fingerprint: this.self.fingerprint || '',
+      avatarData: this.self.avatarData || '',
     };
   }
 

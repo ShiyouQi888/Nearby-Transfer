@@ -128,7 +128,7 @@ final class NativeDiscovery {
     private JSONObject announceJson() throws Exception {
         String name = AppContextHolder.context.getSharedPreferences("nearby_transfer_identity", Context.MODE_PRIVATE).getString("device_name", "我的手机");
         return new JSONObject().put("v", 1).put("type", "announce").put("seq", System.nanoTime() & 0x7fffffff).put("ts", System.currentTimeMillis()).put("deviceId", deviceId)
-            .put("device", new JSONObject().put("deviceId", deviceId).put("name", name).put("type", "mobile").put("os", "Android").put("port", PORT).put("protocol", "LTP/1").put("pairingRequired", true));
+            .put("device", new JSONObject().put("deviceId", deviceId).put("name", name).put("type", "mobile").put("os", "Android").put("port", PORT).put("protocol", "LTP/1").put("pairingRequired", true).put("avatarData", AppContextHolder.context.getSharedPreferences("nearby_transfer_identity", Context.MODE_PRIVATE).getString("avatar_data", "")));
     }
 
     void stop() { running.set(false); if (socket != null) socket.close(); if (thread != null) thread.interrupt(); if (multicastLock != null && multicastLock.isHeld()) multicastLock.release(); }

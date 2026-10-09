@@ -6,6 +6,7 @@
         <item name="android:fontFamily">sans</item>
         <item name="android:windowBackground">#0F1210</item>
         <item name="android:colorAccent">#00D283</item>
+        <item name="alertDialogTheme">@style/AppGroupDialogTheme</item>
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">#0F1210</item>
@@ -14,6 +15,15 @@
     </style>
 
     <style name="AppTheme.NoActionBar" parent="AppTheme" />
+
+    <style name="AppGroupDialogTheme" parent="ThemeOverlay.AppCompat.Dialog.Alert">
+        <item name="android:colorBackground">#171C19</item>
+        <item name="android:textColorPrimary">#F1F5F2</item>
+        <item name="android:textColorSecondary">#9AA8A0</item>
+        <item name="colorAccent">#00D283</item>
+        <item name="android:windowBackground">@drawable/group_dialog_background</item>
+        <item name="android:backgroundDimAmount">0.64</item>
+    </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme">

@@ -14,7 +14,7 @@
   <!-- 顶栏 -->
   <header class="titlebar">
     <div class="brand">
-      <div class="logo">N</div>
+      <div class="logo" aria-hidden="true"></div>
       <div>
         <div class="brand-title">
           <h1>邻传</h1>
@@ -267,7 +267,8 @@
             <div class="chat-side-head">
               <div class="ic-chip sm" data-icon="chat"></div>
               <h2>会话</h2>
-              <button class="btn ghost small" id="btnNewChat" title="选择在线设备发起会话"><span class="bi" data-icon="plus"></span></button>
+              <button class="btn ghost small" id="btnNewChat" title="选择在线设备发起会话" aria-label="新建单聊"><span class="bi" data-icon="plus"></span></button>
+              <button class="btn ghost small" id="btnNewGroup" title="新建或加入群聊" aria-label="新建或加入群聊"><span class="bi" data-icon="chat"></span></button>
             </div>
             <ul class="chat-list" id="chatList"></ul>
             <div class="empty" id="chatListEmpty">还没有会话。在下方选择一个在线设备开始聊天。</div>
@@ -288,6 +289,8 @@
                 </div>
               </div>
               <div class="chat-head-actions">
+                <button class="btn ghost small" id="btnChatAlias" title="设置设备备注"><span class="bi" data-icon="edit"></span>备注</button>
+                <button class="btn ghost small" id="btnGroupManage" hidden><span class="bi" data-icon="settings"></span>管理群聊</button>
                 <button class="btn ghost small" id="btnChatClear"><span class="bi" data-icon="trash"></span>清空</button>
               </div>
             </div>
@@ -515,7 +518,7 @@
 
 <!-- 设置弹窗：只保留本机运行配置；版本、版权与联系信息统一放在独立“关于”页面 -->
 <div class="modal-mask" id="settingsModal" hidden>
-  <div class="modal">
+  <div class="modal settings-modal">
     <div class="modal-head">
       <div class="dot-badge" data-icon="settings"></div>
       <div><h3>设置</h3><p>本机身份、接收目录与软件信息</p></div>
@@ -527,11 +530,24 @@
         <input class="input" id="setName" maxlength="32" spellcheck="false" />
       </div>
       <div class="field">
+        <label>设备头像</label>
+        <div class="row"><img id="setAvatarPreview" alt="设备头像预览" width="48" height="48" style="border-radius:50%;object-fit:cover;display:none"><button class="btn" id="btnChooseAvatar">上传头像</button><button class="btn ghost" id="btnClearAvatar">恢复默认</button><input id="avatarFile" type="file" accept="image/*" hidden></div>
+        <div class="field-hint">头像会压缩后广播给附近设备（仅局域网）。</div>
+      </div>
+      <div class="field">
         <label>语言 / Language</label>
         <select class="input" id="setLanguage">
           <option value="zh-CN">简体中文</option>
           <option value="en-US">English</option>
         </select>
+      </div>
+      <div class="field">
+        <label>界面主题</label>
+        <select class="input" id="setTheme">
+          <option value="dark">深色模式</option>
+          <option value="light">浅色模式</option>
+        </select>
+        <div class="field-hint">切换桌面端的整体界面明暗风格。</div>
       </div>
       <div class="field">
         <label>接收文件保存目录</label>
@@ -550,7 +566,7 @@
           <div class="kv" id="firewallStatus">正在检测防火墙权限…</div>
           <button class="btn ghost small" id="btnFixFirewall">自动配置</button>
         </div>
-        <div class="field-hint">仅允许专用/域网络访问邻传端口 53317，不开放公网。</div>
+        <div class="field-hint">仅允许专用/域网络访问邻传端口 53317、53318、53300，不开放公网。</div>
       </div>
     </div>
 
@@ -559,6 +575,46 @@
       <button class="btn primary" id="btnSaveSettings"><span class="bi" data-icon="check"></span>保存</button>
     </div>
   </div>
+</div>
+
+<div class="modal-mask" id="groupModal" hidden role="presentation">
+  <section class="modal group-modal" role="dialog" aria-modal="true" aria-labelledby="groupModalTitle">
+    <div class="modal-head"><div><h3 id="groupModalTitle">新建群聊</h3><p id="groupModalDescription">创建一个局域网群聊，邀请口令 10 分钟有效。</p></div><button class="icon-btn" id="groupModalClose" aria-label="关闭">×</button></div>
+    <div class="group-modal-tabs" role="tablist"><button class="active" id="groupCreateTab" role="tab" aria-selected="true">新建群聊</button><button id="groupJoinTab" role="tab" aria-selected="false">加入群聊</button></div>
+    <label class="field-label" id="groupNameLabel" for="groupNameInput">群聊名称</label>
+    <input class="input" id="groupNameInput" maxlength="48" placeholder="给群聊起个名字">
+    <label class="field-label" id="groupCodeLabel" for="groupCodeInput" hidden>6 位邀请口令</label>
+    <input class="input group-code-input" id="groupCodeInput" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="输入群主分享的 6 位数字" hidden>
+    <p class="group-modal-error" id="groupModalError" role="status" hidden></p>
+    <div class="modal-actions"><button class="btn" id="groupModalCancel">取消</button><button class="btn primary" id="groupModalSubmit">创建群聊</button></div>
+  </section>
+</div>
+
+<div class="modal-mask" id="groupInviteModal" hidden role="presentation">
+  <section class="modal group-invite-modal" role="dialog" aria-modal="true" aria-labelledby="groupInviteTitle">
+    <div class="modal-head"><div><h3 id="groupInviteTitle">群聊已创建</h3><p id="groupInviteName"></p></div><button class="icon-btn" id="groupInviteClose" aria-label="关闭">×</button></div>
+    <p class="group-invite-hint">让对方在同一局域网内输入此口令加入</p>
+    <div class="group-invite-code" id="groupInviteCode" aria-label="群聊口令">------</div>
+    <div class="group-invite-footer"><span id="groupInviteExpiry">口令 10 分钟后失效</span><button class="link-btn" id="groupInviteRefresh">刷新口令</button></div>
+    <div class="modal-actions"><button class="btn" id="groupInviteDone">完成</button><button class="btn primary" id="groupInviteCopy">复制口令</button></div>
+  </section>
+</div>
+
+<div class="modal-mask" id="groupManageModal" hidden role="presentation">
+  <section class="modal group-modal" role="dialog" aria-modal="true" aria-labelledby="groupManageTitle">
+    <div class="modal-head"><div><h3 id="groupManageTitle">群聊管理</h3><p id="groupManageMeta"></p></div><button class="icon-btn" id="groupManageClose" aria-label="关闭">×</button></div>
+    <div class="group-member-list" id="groupMemberList"></div>
+    <div class="group-manage-actions" id="groupOwnerActions"><button class="btn" id="groupShowCode">显示邀请口令</button><button class="btn" id="groupRefreshCode">刷新口令</button><select class="input" id="groupRemoveSelect" aria-label="选择成员"></select><button class="btn" id="groupRemoveMember">移除成员</button><button class="btn danger" id="groupDissolve">解散群聊</button></div>
+    <div class="group-manage-actions" id="groupMemberActions" hidden><button class="btn danger" id="groupLeave">退出群聊</button></div>
+    <div class="modal-actions"><button class="btn" id="groupManageDone">完成</button></div>
+  </section>
+</div>
+
+<div class="modal-mask" id="groupConfirmModal" hidden role="presentation">
+  <section class="modal group-modal" role="alertdialog" aria-modal="true" aria-labelledby="groupConfirmTitle">
+    <div class="modal-head"><div><h3 id="groupConfirmTitle">确认操作</h3><p id="groupConfirmMessage"></p></div></div>
+    <div class="modal-actions"><button class="btn" id="groupConfirmCancel">取消</button><button class="btn danger" id="groupConfirmAccept">确认</button></div>
+  </section>
 </div>
 
 <div class="toast-wrap" id="toastWrap"></div>

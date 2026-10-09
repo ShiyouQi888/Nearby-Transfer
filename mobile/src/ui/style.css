@@ -770,3 +770,157 @@ button:focus-visible, input:focus-visible {
   color: var(--ds-text-muted); font-size: 12px; line-height: 18px;
 }
 .offer-trust input { min-height: 0; width: 18px; height: 18px; margin-top: 1px; accent-color: var(--ds-brand); flex-shrink: 0; }
+
+/* ============================================================
+   Android product layout refinement · v5
+   A touch-first communication surface: clear hierarchy, compact
+   utility sections, and a continuous chat canvas without nested
+   decorative cards.  Touch targets remain at least 40–44px.
+   ============================================================ */
+html, body {
+  font-size: 14px;
+  font-weight: 500;
+  color-scheme: dark;
+  background: var(--ds-bg);
+}
+#app { background: var(--ds-bg); }
+
+.topbar {
+  min-height: 64px;
+  padding: calc(var(--safe-top) + 10px) 16px 10px;
+  background: var(--ds-bg-elevated);
+  border-bottom-color: var(--ds-border);
+}
+.tb-left { gap: 11px; }
+.tb-logo { width: 36px; height: 36px; border-radius: 12px; }
+.tb-title { font-size: 16px; font-weight: 760; line-height: 21px; }
+.tb-sub { font-size: 11.5px; line-height: 17px; }
+.tb-actions { gap: 7px; }
+.connection-badge { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+.icon-btn { width: 38px; min-height: 38px; height: 38px; border-radius: 11px; }
+
+.screen { padding: 16px 16px calc(var(--safe-bottom) + 24px); }
+.screen#screen-connect { padding-top: 14px; }
+.hero {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  column-gap: 13px;
+  text-align: left;
+  padding: 8px 4px 18px;
+}
+.hero-icon { grid-row: span 2; width: 52px; height: 52px; margin: 1px 0 0; border-radius: 16px; }
+.hero h2 { margin: 0 0 3px; font-size: 20px; line-height: 28px; font-weight: 760; }
+.hero p { font-size: 12.5px; line-height: 19px; }
+.card { padding: 16px; margin-bottom: 12px; border-radius: 15px; }
+.card-title { margin-bottom: 12px; font-size: 14px; line-height: 21px; font-weight: 700; }
+.hint { margin-top: 9px; font-size: 11.5px; line-height: 17px; }
+.btn { min-height: 44px; padding: 10px 15px; border-radius: 11px; font-weight: 650; }
+.btn.small { min-height: 36px; padding: 8px 11px; }
+.input { min-height: 44px; padding: 10px 12px; border-radius: 11px; }
+.code-input input { min-height: 60px; padding: 14px; font-size: 28px; border-radius: 12px; }
+.found { min-height: 58px; padding: 10px 11px; border-radius: 12px; }
+.found-icon { width: 38px; height: 38px; border-radius: 11px; }
+.found-name { font-size: 13.5px; font-weight: 650; }
+
+/* Connected context: the device header is a toolbar, not a floating card. */
+#screen-main { padding: 0 0 calc(var(--safe-bottom) + 20px); }
+#screen-main .peer-card {
+  min-height: 70px;
+  margin: 0;
+  padding: 13px 16px;
+  border-radius: 0;
+  background: var(--ds-bg-elevated);
+  border: 0;
+  border-bottom: 1px solid var(--ds-border);
+}
+#screen-main .peer-icon { width: 42px; height: 42px; border-radius: 13px; }
+#screen-main .peer-name { font-size: 15px; font-weight: 740; line-height: 21px; }
+#screen-main .peer-meta { font-size: 11.5px; line-height: 17px; }
+#screen-main .seg {
+  margin: 10px 16px 12px;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 12px;
+  background: var(--ds-surface);
+  border-color: var(--ds-border);
+}
+#screen-main .seg-btn { min-height: 40px; border-radius: 9px; font-size: 13px; font-weight: 700; }
+#screen-main .seg-btn.is-on { color: var(--ds-text); background: var(--ds-brand-soft); box-shadow: inset 0 0 0 1px rgba(7,193,96,.28); }
+#screen-main .pane[data-pane="files"] { padding: 0 16px; }
+#screen-main > #btnDisconnect { margin: 0 16px !important; }
+
+/* Files: compact operational sections with strong primary action. */
+#pane-files .card { padding: 16px; }
+#pane-files .send-grid { gap: 8px; margin-bottom: 10px; }
+#pane-files .tile { min-height: 78px; padding: 11px 5px; gap: 6px; border-radius: 11px; font-size: 11px; }
+#pane-files .tile .tile-ic { transform: scale(.9); }
+#pane-files .pick-preview { gap: 5px; margin-bottom: 10px; }
+#pane-files .pick-row { padding: 8px 10px; font-size: 12px; }
+#pane-files #btnSend { min-height: 46px; }
+
+/* Chat: full-bleed message canvas, no extra card around the conversation. */
+.screen.chat-open { padding: 0; }
+.screen.chat-open .peer-card { flex: 0 0 auto; }
+.screen.chat-open .seg { flex: 0 0 auto; margin-bottom: 8px; }
+.screen.chat-open #pane-chat.is-on {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 16px;
+  overflow: hidden;
+}
+#pane-chat > .chat-day {
+  align-self: center;
+  width: fit-content;
+  max-width: 100%;
+  margin: 2px auto 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ds-text-muted);
+  font-size: 10.5px;
+  line-height: 17px;
+}
+#pane-chat > .chat-timeline { padding: 4px 0 10px; gap: 0; }
+.chat-empty { padding: 30px 12px; }
+.ce-ic { width: 52px; height: 52px; margin-bottom: 12px; border-radius: 15px; }
+.ce-title { font-size: 15px; font-weight: 700; }
+.ce-sub { font-size: 12px; line-height: 18px; }
+.msg { gap: 8px; margin-bottom: 13px; }
+.msg-avatar { width: 30px; height: 30px; }
+.msg-body { max-width: min(82%, 300px); }
+.bubble { padding: 9px 12px; border-radius: 16px 16px 16px 5px; font-size: 14px; line-height: 21px; }
+.msg.out .bubble { border-radius: 16px 16px 5px 16px; }
+.msg-meta { margin-top: 3px; font-size: 10.5px; line-height: 15px; }
+.file-card { max-width: 270px; }
+.bubble.is-file { padding: 9px; border-radius: 14px; }
+.file-card-name { font-size: 12.5px; font-weight: 700; }
+.file-card-size { font-size: 10.5px; }
+.file-card-bar { height: 5px; margin-top: 7px; }
+.chat-composer {
+  min-height: 64px;
+  padding: 9px 0 calc(9px + var(--safe-bottom));
+  background: var(--ds-bg);
+  border-top: 1px solid var(--ds-border);
+}
+.chat-attach, .chat-send { width: 40px; min-height: 40px; height: 40px; border-radius: 50%; }
+.chat-input { min-height: 42px; padding: 9px 13px; border-radius: 21px; font-size: 14px; line-height: 21px; }
+
+/* Sheets and receive confirmation use the same product surface as the app. */
+.sheet { max-height: 88vh; padding: 9px 18px calc(var(--safe-bottom) + 18px); background: var(--ds-surface); border-top-color: var(--ds-border-strong); border-radius: 20px 20px 0 0; }
+.sheet-handle { width: 36px; height: 4px; margin: 4px auto 14px; background: var(--ds-border-strong); }
+.sheet-title { font-size: 18px; line-height: 26px; font-weight: 740; margin-bottom: 17px; }
+.field { margin-bottom: 16px; }
+.field > label { font-size: 12.5px; font-weight: 650; margin-bottom: 7px; }
+.permission-row { padding: 11px; border-radius: 12px; }
+.settings-about { margin-top: 16px; padding: 13px; border-radius: 12px; }
+.settings-about-title { font-size: 13.5px; }
+.sheet-actions { gap: 8px; margin-top: 20px; }
+.sheet-actions .btn { min-height: 46px; }
+
+@media (max-width: 360px) {
+  .topbar { padding-inline: 12px; }
+  .screen { padding-inline: 12px; }
+  #screen-main .seg, #screen-main > #btnDisconnect { margin-left: 12px; margin-right: 12px; }
+  #screen-main .pane[data-pane="files"], .screen.chat-open #pane-chat.is-on { padding-inline: 12px; }
+}

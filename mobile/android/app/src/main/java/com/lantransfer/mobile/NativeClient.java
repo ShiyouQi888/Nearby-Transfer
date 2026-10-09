@@ -32,7 +32,7 @@ import java.util.concurrent.Executors;
 
 /** Pure Android LTP/1 client. No WebView or Capacitor runtime is required. */
 final class NativeClient {
-    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onConnectionDetails(String serverName, String serverId, String token, String host) {} default void onRejected(String reason) {} default void onProgress(int percent, boolean receiving) { onProgress(percent); } default void onTransferFinished(boolean incoming, String label, boolean success) {} default void onSendWaiting(List<Uri> files) {} default void onSendAccepted(List<Uri> files) {} default void onSendFailed(List<Uri> files, String error) {} default void onSendRejected(List<Uri> files) {} default void onIncomingOffer(String label) {} default void onIncomingOffer(String label, String deviceName, String ip) { onIncomingOffer(label); }
+    interface Listener { void onConnected(String serverName); void onError(String message); void onClosed(); void onProgress(int percent); default void onConnectionDetails(String serverName, String serverId, String token, String host) {} default void onRemoteAvatar(String avatarData) {} default void onRejected(String reason) {} default void onProgress(int percent, boolean receiving) { onProgress(percent); } default void onTransferFinished(boolean incoming, String label, boolean success) {} default void onSendWaiting(List<Uri> files) {} default void onSendAccepted(List<Uri> files) {} default void onSendFailed(List<Uri> files, String error) {} default void onSendRejected(List<Uri> files) {} default void onIncomingOffer(String label) {} default void onIncomingOffer(String label, String deviceName, String ip) { onIncomingOffer(label); }
         /**
          * 收到对端发来的聊天消息（文本或文件）。
          * @param fromSelf 留空/未使用；消息一定是「对方发来的」
@@ -92,6 +92,13 @@ final class NativeClient {
 
     boolean isConnected() { return connected && socket != null && socket.isConnected() && !socket.isClosed(); }
 
+    void updateProfile() {
+        try {
+            String avatar = NativeDiscovery.AppContextHolder.context.getSharedPreferences("nearby_transfer_identity", android.content.Context.MODE_PRIVATE).getString("avatar_data", "");
+            sendJson(message("profile_update").put("device", new JSONObject().put("deviceId", deviceId).put("name", deviceName).put("type", "mobile").put("os", "Android").put("avatarData", avatar)));
+        } catch (Exception ignored) { }
+    }
+
     private void connectInternal(String host, int port, JSONObjectAuth authData) {
         io.execute(() -> {
             try {
@@ -99,7 +106,8 @@ final class NativeClient {
                 JSONObject auth = new JSONObject().put("mode", authData.mode);
                 if (authData.code != null) auth.put("pairCode", authData.code);
                 if (authData.token != null) auth.put("token", authData.token);
-                sendJson(message("hello").put("device", new JSONObject().put("deviceId", deviceId).put("name", deviceName).put("type", "mobile").put("os", "Android")).put("auth", auth));
+                String avatar = NativeDiscovery.AppContextHolder.context.getSharedPreferences("nearby_transfer_identity", android.content.Context.MODE_PRIVATE).getString("avatar_data", "");
+                sendJson(message("hello").put("device", new JSONObject().put("deviceId", deviceId).put("name", deviceName).put("type", "mobile").put("os", "Android").put("avatarData", avatar)).put("auth", auth));
                 BufferedInputStream input = new BufferedInputStream(socket.getInputStream()); byte[] buffer = new byte[32 * 1024]; int count;
                 while (!closed && (count = input.read(buffer)) != -1) feedIncoming(buffer, count);
                 if (!closed) { failInterruptedTransfers(); listener.onClosed(); }
@@ -132,13 +140,14 @@ final class NativeClient {
         android.util.Log.d("LTP-TRACE", "in  " + line.substring(0, Math.min(160, line.length())));
         android.util.Log.d("LTP-TRACE", "in  " + line.substring(0, Math.min(200, line.length())));
         try { JSONObject msg = new JSONObject(line); String type = msg.optString("type");
-            if ("hello_ack".equals(type)) { if (msg.optBoolean("accepted", false)) { connected = true; JSONObject server = msg.optJSONObject("server"); remoteDeviceName = server == null ? "电脑" : server.optString("name", "电脑"); listener.onConnected(remoteDeviceName); listener.onConnectionDetails(remoteDeviceName, server == null ? "" : server.optString("deviceId", ""), msg.optString("token", ""), remoteIp); } else listener.onError(reason(msg.optString("reason"))); }
+            if ("hello_ack".equals(type)) { if (msg.optBoolean("accepted", false)) { connected = true; JSONObject server = msg.optJSONObject("server"); remoteDeviceName = server == null ? "电脑" : server.optString("name", "电脑"); listener.onConnected(remoteDeviceName); listener.onRemoteAvatar(server == null ? "" : server.optString("avatarData", "")); listener.onConnectionDetails(remoteDeviceName, server == null ? "" : server.optString("deviceId", ""), msg.optString("token", ""), remoteIp); } else listener.onError(reason(msg.optString("reason"))); }
             else if ("send_offer".equals(type)) prepareIncomingOffer(msg);
             else if ("send_reject".equals(type)) { if (pendingTransferId != null && pendingTransferId.equals(msg.optString("transferId"))) { String rejectedId = pendingTransferId; listener.onTransferFinished(false, pendingFileNames, false); if (chatTransferMsgIds.containsKey(rejectedId)) listener.onChatFileFinished(rejectedId, false, false, null); listener.onSendRejected(new ArrayList<>(pendingSendUris)); pendingFiles.clear(); pendingSendUris.clear(); pendingTransferId = null; pendingFileNames = ""; listener.onRejected(msg.optString("reason", "user_denied")); } }
             else if ("complete".equals(type)) finishIncomingFile(msg.optString("fileId"), msg.optString("path", ""));
             else if ("send_accept".equals(type)) transferIo.execute(() -> { try { sendPendingFiles(msg); } catch (Exception e) { failPendingSend(e); } });
             else if ("ping".equals(type)) sendJson(message("pong"));
             else if ("chat_send".equals(type)) handleChatSend(msg);
+            else if ("profile_update".equals(type)) { JSONObject device = msg.optJSONObject("device"); listener.onRemoteAvatar(device == null ? "" : device.optString("avatarData", "")); }
             else if ("chat_ack".equals(type)) listener.onChatAck(msg.optString("msgId", ""), msg.optLong("ts", 0));
             else if ("chat_read".equals(type)) listener.onChatRead(msg.optLong("upToTs", 0));
             else if ("error".equals(type)) listener.onError(msg.optString("message", "电脑端返回错误"));

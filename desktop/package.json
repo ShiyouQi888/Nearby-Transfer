@@ -1,6 +1,6 @@
 {
   "name": "lan-transfer-desktop",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "private": true,
   "description": "邻传 Nearby Transfer · 局域网跨设备文件互传工具",
   "author": "齐世有 <blacklaw@foxmail.com>",
@@ -13,7 +13,8 @@
     "gen:fonts": "python ../scripts/gen-fonts.py",
     "test:protocol": "node ../scripts/test-protocol.js",
     "test:e2e": "node ../scripts/test-e2e.js",
-    "test": "node ../scripts/test-protocol.js && node ../scripts/test-e2e.js",
+    "test:groups": "node ../scripts/test-groups.js",
+    "test": "node ../scripts/test-protocol.js && node ../scripts/test-e2e.js && node ../scripts/test-groups.js",
     "build": "electron-builder --win nsis --x64",
     "build:store": "electron-builder --win msix --x64"
   },

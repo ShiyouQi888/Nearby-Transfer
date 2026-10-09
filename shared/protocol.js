@@ -191,6 +191,7 @@ const MSG = Object.freeze({
   CHAT_SEND: 'chat_send',
   CHAT_ACK: 'chat_ack',
   CHAT_READ: 'chat_read',
+  PROFILE_UPDATE: 'profile_update',
 });
 
 const HELLO_REASON = Object.freeze({

@@ -43,6 +43,9 @@ import com.journeyapps.barcodescanner.ScanOptions;
 import java.util.ArrayList;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.List;
@@ -52,6 +55,19 @@ import java.util.UUID;
 public class MainActivity extends AppCompatActivity implements NativeClient.Listener {
     private static final int PICK_FILES = 42;
     private static final int PICK_CHAT_FILE = 43;
+    private static final int PICK_AVATAR = 44;
+
+    // Android native design tokens. Keep the mobile surface calm and dense;
+    // hierarchy comes from spacing and typography instead of extra cards.
+    private static final int COLOR_BACKGROUND = Color.rgb(12, 16, 14);
+    private static final int COLOR_SURFACE = Color.rgb(20, 25, 22);
+    private static final int COLOR_SURFACE_RAISED = Color.rgb(27, 33, 29);
+    private static final int COLOR_BORDER = Color.rgb(43, 52, 47);
+    private static final int COLOR_TEXT = Color.rgb(241, 244, 242);
+    private static final int COLOR_TEXT_SECONDARY = Color.rgb(166, 177, 170);
+    private static final int COLOR_TEXT_MUTED = Color.rgb(126, 140, 131);
+    private static final int COLOR_ACCENT = Color.rgb(0, 205, 119);
+    private static final int COLOR_ACCENT_BRIGHT = Color.rgb(0, 232, 135);
     private EditText ipInput, codeInput;
     private EditText deviceNameInput;
     private TextView status;
@@ -78,18 +94,35 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private Button navConnect, navSend, navSettings, navChat;
     // ── 聊天 ──
     private ChatStore chatStore;
+    private GroupStore groupStore;
+    private final java.util.Map<String, GroupClient> groupClients = new java.util.concurrent.ConcurrentHashMap<>();
+    private String activeGroupId = "";
+    private String selectedDirectPeer = "";
+    private String chatFilePeer = "";
+    private boolean chatConversationOpen;
+    private LinearLayout chatInboxSection, chatInboxList, chatDetailSection;
+    private TextView chatDetailTitle;
+    private Button groupActionButton, chatDetailAction;
     private LinearLayout chatList;
     private ScrollView chatScroll;
     private TextView chatEmpty, chatPeerName, chatConnectionLabel, headerSubtitle;
+    private DeviceAvatar chatPeerAvatar;
+    private TextView chatGroupAvatar;
     private View chatOnlineDot;
     private LinearLayout chatPeerHeader;
+    private View headerSpacer;
     private EditText chatInput;
     private Button chatSendButton;
+    private Button chatAttachButton;
     /** 与当前对端已读位点（本地视角）。 */
     private long chatReadUpTo = 0;
     /** 聊天文件进度：transferId -> 对应的气泡 View，用于就地刷新进度。 */
     private final java.util.Map<String, TextView> chatProgressViews = new java.util.HashMap<>();
     private final java.util.Map<String, ProgressBar> chatProgressBars = new java.util.HashMap<>();
+    private final java.util.Map<String, FileOutputStream> groupFileOutputs = new java.util.HashMap<>();
+    private final java.util.Map<String, File> groupFilePaths = new java.util.HashMap<>();
+    private final java.util.Map<String, org.json.JSONObject> groupFileMeta = new java.util.HashMap<>();
+    private final java.util.concurrent.ExecutorService groupFileExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
     private Button sendButton;
     private Button updateButton;
     private TextView updateStatus;
@@ -113,64 +146,97 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         }
         english = getPreferences(MODE_PRIVATE).getBoolean("english", false);
         chatStore = new ChatStore(this);
+        groupStore = new GroupStore(this);
         if (!identity.contains("device_name")) identity.edit().putString("device_name", english ? "My phone" : "我的手机").apply();
-        getWindow().setStatusBarColor(Color.rgb(15, 18, 16));
+        getWindow().setStatusBarColor(COLOR_BACKGROUND);
+        getWindow().setNavigationBarColor(COLOR_BACKGROUND);
+        if (Build.VERSION.SDK_INT >= 26) getWindow().getDecorView().setSystemUiVisibility(0);
         createNotificationChannel();
         NativeDiscovery.AppContextHolder.context = getApplicationContext();
         discovery = new NativeDiscovery(deviceId);
         discovery.start();
         qrLauncher = registerForActivityResult(new ScanContract(), result -> { if (result.getContents() != null && !connectFromQr(result.getContents())) toast("二维码内容无法识别"); });
         buildUi();
+        GroupHostService.listener = event -> runOnUiThread(() -> handleGroupHostEvent(event));
+        boolean hasHostedGroups=false;
+        for (org.json.JSONObject group : groupStore.list()) if (deviceId.equals(group.optString("ownerId"))) {
+            if(group.optString("inviteCode").isEmpty()||group.optLong("inviteExpiresAt")<=System.currentTimeMillis())groupStore.updateInvite(group.optString("id"),uniqueGroupCode(group.optString("id")),System.currentTimeMillis()+10*60*1000L);
+            hasHostedGroups=true;
+        }
+        if(hasHostedGroups)GroupHostService.start(this);
+        restoreJoinedGroupClients();
         chatBackCallback = new OnBackPressedCallback(false) {
-            @Override public void handleOnBackPressed() { showPage(0); }
+            @Override public void handleOnBackPressed() { if (chatConversationOpen) showChatInbox(); else showPage(0); }
         };
         getOnBackPressedDispatcher().addCallback(this, chatBackCallback);
     }
 
+    /** 应用重启后恢复已加入群聊的长连接，避免群聊退化成只能查看本地记录。 */
+    private void restoreJoinedGroupClients() {
+        for (org.json.JSONObject group : groupStore.list()) {
+            if (deviceId.equals(group.optString("ownerId"))) continue;
+            if (group.optString("id").isEmpty() || group.optString("host").isEmpty() || group.optString("token").isEmpty()) continue;
+            String id = group.optString("id");
+            GroupClient client = new GroupClient(group, deviceId, deviceName(), getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).getString("avatar_data", ""), event -> runOnUiThread(() -> handleJoinedGroupEvent(id, event)));
+            groupClients.put(id, client);
+            client.connect();
+        }
+    }
+
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(Color.rgb(15, 18, 16));
-        LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.VERTICAL); header.setPadding(dp(24), dp(18), dp(24), dp(10));
+        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(COLOR_BACKGROUND);
+        LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.VERTICAL); header.setPadding(dp(18), dp(10), dp(18), dp(6));
         LinearLayout headerTop = new LinearLayout(this); headerTop.setOrientation(LinearLayout.HORIZONTAL); headerTop.setGravity(Gravity.CENTER_VERTICAL);
-        TextView brandTitle = text("邻传", 30, Color.WHITE);
-        headerTop.addView(brandTitle, new LinearLayout.LayoutParams(-2, dp(48)));
+        TextView brandTitle = text("邻传", 25, COLOR_TEXT); brandTitle.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        headerTop.addView(brandTitle, new LinearLayout.LayoutParams(-2, dp(42)));
+        headerSpacer = new View(this); headerTop.addView(headerSpacer, new LinearLayout.LayoutParams(0, dp(1), 1));
         chatPeerHeader = new LinearLayout(this); chatPeerHeader.setOrientation(LinearLayout.HORIZONTAL); chatPeerHeader.setGravity(Gravity.CENTER_VERTICAL); chatPeerHeader.setVisibility(View.GONE);
         chatPeerHeader.setPadding(dp(10), 0, dp(6), 0);
-        View headerPeerAvatar = new DeviceAvatar(false);
-        chatPeerHeader.addView(headerPeerAvatar, new LinearLayout.LayoutParams(dp(27), dp(27)));
+        chatPeerAvatar = new DeviceAvatar(false);
+        chatPeerHeader.addView(chatPeerAvatar, new LinearLayout.LayoutParams(dp(27), dp(27)));
+        chatGroupAvatar = text(english ? "G" : "群", 12, Color.rgb(0, 225, 132)); chatGroupAvatar.setGravity(Gravity.CENTER);
+        chatGroupAvatar.setBackground(box(Color.rgb(17, 52, 36), Color.rgb(26, 95, 59), dp(14)));
+        chatGroupAvatar.setVisibility(View.GONE); chatPeerHeader.addView(chatGroupAvatar, new LinearLayout.LayoutParams(dp(27), dp(27)));
         LinearLayout peerInfo = new LinearLayout(this); peerInfo.setOrientation(LinearLayout.VERTICAL); peerInfo.setGravity(Gravity.CENTER_VERTICAL); peerInfo.setPadding(dp(7), 0, 0, 0);
         chatPeerName = text(english ? "Paired computer" : "已配对的电脑", 13, Color.WHITE); chatPeerName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); chatPeerName.setSingleLine(true); chatPeerName.setEllipsize(android.text.TextUtils.TruncateAt.END);
         peerInfo.addView(chatPeerName, new LinearLayout.LayoutParams(-1, dp(19)));
+        chatPeerName.setOnClickListener(v -> { if (!activeGroupId.isEmpty()) manageActiveGroup(); else editChatAlias(); });
         LinearLayout connectionLine = new LinearLayout(this); connectionLine.setOrientation(LinearLayout.HORIZONTAL); connectionLine.setGravity(Gravity.CENTER_VERTICAL);
         chatOnlineDot = new View(this); chatOnlineDot.setBackground(box(Color.rgb(0, 220, 130), Color.rgb(0, 220, 130), dp(5))); connectionLine.addView(chatOnlineDot, new LinearLayout.LayoutParams(dp(5), dp(5)));
         chatConnectionLabel = text(english ? "Online · LAN" : "在线 · 局域网直连", 10, Color.rgb(145, 163, 151)); chatConnectionLabel.setSingleLine(true); chatConnectionLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams headerConnectionParams = new LinearLayout.LayoutParams(0, dp(16), 1); headerConnectionParams.leftMargin = dp(5); connectionLine.addView(chatConnectionLabel, headerConnectionParams);
         peerInfo.addView(connectionLine, new LinearLayout.LayoutParams(-1, dp(16)));
         chatPeerHeader.addView(peerInfo, new LinearLayout.LayoutParams(0, dp(38), 1));
-        headerTop.addView(chatPeerHeader, new LinearLayout.LayoutParams(0, dp(44), 1));
-        languageButton = compactLanguageButton(); headerTop.addView(languageButton, new LinearLayout.LayoutParams(dp(52), dp(36)));
-        header.addView(headerTop, new LinearLayout.LayoutParams(-1, dp(48)));
-        headerSubtitle = text("局域网高速互传", 14, Color.rgb(163, 167, 164)); header.addView(headerSubtitle, new LinearLayout.LayoutParams(-1, dp(28)));
-        status = text("未连接", 14, Color.rgb(0, 232, 135)); status.setGravity(Gravity.CENTER_VERTICAL); header.addView(status, new LinearLayout.LayoutParams(-1, dp(36)));
+        headerTop.addView(chatPeerHeader, new LinearLayout.LayoutParams(0, dp(40), 1));
+        languageButton = compactLanguageButton(); headerTop.addView(languageButton, new LinearLayout.LayoutParams(dp(48), dp(34)));
+        groupActionButton = new Button(this); groupActionButton.setText("＋"); groupActionButton.setTextSize(25); groupActionButton.setAllCaps(false);
+        groupActionButton.setTextColor(Color.rgb(0, 232, 135)); groupActionButton.setMinWidth(0); groupActionButton.setMinHeight(0);
+        groupActionButton.setPadding(0, 0, 0, dp(2)); groupActionButton.setBackground(box(Color.rgb(17, 45, 32), COLOR_ACCENT, dp(11)));
+        groupActionButton.setContentDescription(english ? "Create or join a group" : "新建或加入群聊"); groupActionButton.setOnClickListener(v -> showGroupActions());
+        groupActionButton.setVisibility(View.GONE); headerTop.addView(groupActionButton, new LinearLayout.LayoutParams(dp(38), dp(34)));
+        header.addView(headerTop, new LinearLayout.LayoutParams(-1, dp(42)));
+        headerSubtitle = text("局域网高速互传", 13, COLOR_TEXT_SECONDARY); header.addView(headerSubtitle, new LinearLayout.LayoutParams(-1, dp(22)));
+        status = text("未连接", 13, COLOR_ACCENT_BRIGHT); status.setGravity(Gravity.CENTER_VERTICAL); header.addView(status, new LinearLayout.LayoutParams(-1, dp(28)));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         connectionSection = new LinearLayout(this); connectionSection.setOrientation(LinearLayout.VERTICAL);
-        TextView section = text("连接电脑", 20, Color.WHITE); section.setPadding(0, dp(12), 0, dp(8)); connectionSection.addView(section, params(-1, 60));
-        ipInput = input("电脑 IP，例如 192.168.1.23"); connectionSection.addView(ipInput, params(-1, 52));
-        codeInput = input("6 位匹配码"); codeInput.setInputType(InputType.TYPE_CLASS_NUMBER); connectionSection.addView(codeInput, params(-1, 52));
-        connectButton = button("使用匹配码连接"); connectButton.setOnClickListener(v -> connect()); connectionSection.addView(connectButton, params(-1, 52));
-        scanDevicesButton = button("扫描局域网设备"); scanDevicesButton.setTextColor(Color.WHITE); scanDevicesButton.setBackground(box(Color.rgb(31,36,33), Color.rgb(7,193,96), dp(12))); scanDevicesButton.setOnClickListener(v -> scanDevices()); connectionSection.addView(scanDevicesButton, params(-1, 48));
+        TextView section = text("连接电脑", 18, COLOR_TEXT); section.setTypeface(Typeface.create("sans-serif", Typeface.BOLD)); section.setPadding(0, dp(8), 0, dp(4)); connectionSection.addView(section, params(-1, 44));
+        ipInput = input("电脑 IP，例如 192.168.1.23"); connectionSection.addView(ipInput, params(-1, 48));
+        codeInput = input("6 位匹配码"); codeInput.setInputType(InputType.TYPE_CLASS_NUMBER); connectionSection.addView(codeInput, params(-1, 48));
+        connectButton = button("使用匹配码连接"); connectButton.setOnClickListener(v -> connect()); connectionSection.addView(connectButton, params(-1, 48));
+        scanDevicesButton = button("扫描局域网设备"); scanDevicesButton.setTextColor(COLOR_TEXT); scanDevicesButton.setBackground(box(COLOR_SURFACE_RAISED, COLOR_ACCENT, dp(11))); scanDevicesButton.setOnClickListener(v -> scanDevices()); connectionSection.addView(scanDevicesButton, params(-1, 44));
         discoveredDevices = new LinearLayout(this); discoveredDevices.setOrientation(LinearLayout.VERTICAL); connectionSection.addView(discoveredDevices, params(-1, -2));
-        TextView pairedTitle = text("历史设备", 17, Color.WHITE); pairedTitle.setPadding(0, dp(14), 0, dp(2)); connectionSection.addView(pairedTitle, params(-1, 42));
+        TextView pairedTitle = text("历史设备", 16, COLOR_TEXT); pairedTitle.setTypeface(Typeface.create("sans-serif", Typeface.BOLD)); pairedTitle.setPadding(0, dp(10), 0, dp(2)); connectionSection.addView(pairedTitle, params(-1, 36));
         pairedDevicesList = new LinearLayout(this); pairedDevicesList.setOrientation(LinearLayout.VERTICAL); connectionSection.addView(pairedDevicesList, params(-1, -2));
-        Button scanButton = button("扫描电脑二维码"); scanButton.setTextColor(Color.WHITE); scanButton.setBackground(box(Color.rgb(31,36,33), Color.rgb(7,193,96), dp(12))); scanButton.setOnClickListener(v -> scanQr()); connectionSection.addView(scanButton, params(-1, 52));
+        Button scanButton = button("扫描电脑二维码"); scanButton.setTextColor(COLOR_TEXT); scanButton.setBackground(box(COLOR_SURFACE_RAISED, COLOR_ACCENT, dp(11))); scanButton.setOnClickListener(v -> scanQr()); connectionSection.addView(scanButton, params(-1, 48));
 
         sendSection = new LinearLayout(this); sendSection.setOrientation(LinearLayout.VERTICAL);
-        TextView sendTitle = text("发送文件", 20, Color.WHITE); sendTitle.setPadding(0, dp(22), 0, dp(8)); sendSection.addView(sendTitle, params(-1, 60));
-        pickButton = button("选择文件"); pickButton.setOnClickListener(v -> pickFiles()); sendSection.addView(pickButton, params(-1, 52));
-        pendingText = text("待发送区：暂无文件", 14, Color.rgb(163, 167, 164)); pendingText.setPadding(0, dp(10), 0, dp(4)); sendSection.addView(pendingText, params(-1, 38));
-        pendingList = new LinearLayout(this); pendingList.setOrientation(LinearLayout.VERTICAL); pendingList.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); sendSection.addView(pendingList, params(-1, -2));
-        sendButton = button("发送文件"); sendButton.setOnClickListener(v -> sendPendingFiles()); sendSection.addView(sendButton, params(-1, 52));
-        receiveText = text("接收区：暂无文件", 14, Color.rgb(163, 167, 164)); receiveText.setPadding(0, dp(10), 0, dp(20)); sendSection.addView(receiveText, params(-1, -2));
+        TextView sendTitle = text("发送文件", 18, COLOR_TEXT); sendTitle.setTypeface(Typeface.create("sans-serif", Typeface.BOLD)); sendTitle.setPadding(0, dp(8), 0, dp(4)); sendSection.addView(sendTitle, params(-1, 44));
+        pickButton = button("选择文件"); pickButton.setOnClickListener(v -> pickFiles()); sendSection.addView(pickButton, params(-1, 48));
+        pendingText = text("待发送区：暂无文件", 13, COLOR_TEXT_SECONDARY); pendingText.setPadding(0, dp(8), 0, dp(2)); sendSection.addView(pendingText, params(-1, 32));
+        pendingList = new LinearLayout(this); pendingList.setOrientation(LinearLayout.VERTICAL); pendingList.setBackground(box(COLOR_SURFACE, COLOR_BORDER, dp(11))); sendSection.addView(pendingList, params(-1, -2));
+        sendButton = button("发送文件"); sendButton.setOnClickListener(v -> sendPendingFiles()); sendSection.addView(sendButton, params(-1, 48));
+        receiveText = text("接收区：暂无文件", 13, COLOR_TEXT_SECONDARY); receiveText.setPadding(0, dp(8), 0, dp(14)); sendSection.addView(receiveText, params(-1, -2));
         LinearLayout historyHeader = new LinearLayout(this); historyHeader.setOrientation(LinearLayout.HORIZONTAL); historyHeader.setGravity(Gravity.CENTER_VERTICAL);
         TextView historyTitle = text("最近传输", 17, Color.WHITE); historyHeader.addView(historyTitle, new LinearLayout.LayoutParams(0, dp(42), 1));
         Button clearHistory = new Button(this); clearHistory.setText(tr("清空记录")); clearHistory.setTextSize(12); clearHistory.setAllCaps(false); clearHistory.setTextColor(Color.rgb(255, 118, 126)); clearHistory.setBackgroundColor(Color.TRANSPARENT); clearHistory.setOnClickListener(v -> { getPreferences(MODE_PRIVATE).edit().remove("transfer_history").apply(); renderTransferHistory(); }); historyHeader.addView(clearHistory, new LinearLayout.LayoutParams(-2, dp(42))); sendSection.addView(historyHeader, params(-1, 42));
@@ -181,12 +247,30 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         // 接收确认统一使用全局浮层，发送页不再重复显示一套确认按钮。
 
         chatSection = new LinearLayout(this); chatSection.setOrientation(LinearLayout.VERTICAL);
-        chatSection.setPadding(dp(20), dp(4), dp(20), 0);
+        chatSection.setPadding(dp(16), dp(2), dp(16), 0);
+        chatInboxSection = new LinearLayout(this); chatInboxSection.setOrientation(LinearLayout.VERTICAL);
+        TextView inboxTitle = text(english ? "Chats" : "会话", 21, Color.WHITE); inboxTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        chatInboxSection.addView(inboxTitle, new LinearLayout.LayoutParams(-1, dp(38)));
+        TextView inboxHint = text(english ? "Choose a conversation to continue" : "选择对话，继续聊天", 12, Color.rgb(127, 145, 134));
+        chatInboxSection.addView(inboxHint, new LinearLayout.LayoutParams(-1, dp(30)));
+        ScrollView inboxScroll = new ScrollView(this); inboxScroll.setFillViewport(true); inboxScroll.setVerticalScrollBarEnabled(false);
+        chatInboxList = new LinearLayout(this); chatInboxList.setOrientation(LinearLayout.VERTICAL);
+        inboxScroll.addView(chatInboxList, new ScrollView.LayoutParams(-1, -2));
+        chatInboxSection.addView(inboxScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        chatSection.addView(chatInboxSection, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        chatDetailSection = new LinearLayout(this); chatDetailSection.setOrientation(LinearLayout.VERTICAL); chatDetailSection.setVisibility(View.GONE);
+        chatSection.addView(chatDetailSection, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout chatHeader = new LinearLayout(this); chatHeader.setOrientation(LinearLayout.HORIZONTAL); chatHeader.setGravity(Gravity.CENTER_VERTICAL);
-        Button chatBack = new Button(this); chatBack.setText("‹"); chatBack.setTextSize(30); chatBack.setAllCaps(false); chatBack.setTextColor(Color.WHITE); chatBack.setContentDescription(english ? "Back to pages" : "返回主页面"); chatBack.setPadding(0, 0, 0, dp(3)); chatBack.setBackgroundColor(Color.TRANSPARENT); chatBack.setOnClickListener(v -> showPage(0));
+        Button chatBack = new Button(this); chatBack.setText("‹"); chatBack.setTextSize(30); chatBack.setAllCaps(false); chatBack.setTextColor(Color.WHITE); chatBack.setContentDescription(english ? "Back to chats" : "返回会话列表"); chatBack.setPadding(0, 0, 0, dp(3)); chatBack.setBackgroundColor(Color.TRANSPARENT); chatBack.setOnClickListener(v -> showChatInbox());
         LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(dp(34), dp(48)); backParams.setMargins(dp(-8), 0, dp(4), 0); chatHeader.addView(chatBack, backParams);
-        chatSection.addView(chatHeader, new LinearLayout.LayoutParams(-1, dp(42)));
-        View headerDivider = new View(this); headerDivider.setBackgroundColor(Color.rgb(38, 46, 41)); chatSection.addView(headerDivider, new LinearLayout.LayoutParams(-1, dp(1)));
+        chatDetailTitle = text(english ? "Direct chat" : "单聊", 14, Color.WHITE); chatDetailTitle.setGravity(Gravity.CENTER_VERTICAL);
+        chatHeader.addView(chatDetailTitle, new LinearLayout.LayoutParams(0, dp(42), 1));
+        chatDetailAction = new Button(this); chatDetailAction.setTextSize(13); chatDetailAction.setAllCaps(false); chatDetailAction.setTextColor(Color.rgb(0, 225, 132));
+        chatDetailAction.setBackgroundColor(Color.TRANSPARENT); chatDetailAction.setOnClickListener(v -> { if (activeGroupId.isEmpty()) editChatAlias(); else manageActiveGroup(); });
+        chatHeader.addView(chatDetailAction, new LinearLayout.LayoutParams(-2, dp(42)));
+        chatDetailSection.addView(chatHeader, new LinearLayout.LayoutParams(-1, dp(42)));
+        View headerDivider = new View(this); headerDivider.setBackgroundColor(Color.rgb(38, 46, 41)); chatDetailSection.addView(headerDivider, new LinearLayout.LayoutParams(-1, dp(1)));
 
         FrameLayout timeline = new FrameLayout(this);
         chatScroll = new ScrollView(this); chatScroll.setFillViewport(true); chatScroll.setClipToPadding(false); chatScroll.setVerticalScrollBarEnabled(false);
@@ -195,25 +279,25 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         timeline.addView(chatScroll, new FrameLayout.LayoutParams(-1, -1));
         chatEmpty = text(english ? "No messages yet\nSend a message to start the conversation." : "还没有消息\n发送一条消息，开始你们的对话。", 13, Color.rgb(127, 145, 134)); chatEmpty.setGravity(Gravity.CENTER); chatEmpty.setTextAlignment(View.TEXT_ALIGNMENT_CENTER); chatEmpty.setLineSpacing(dp(6), 1f); chatEmpty.setPadding(dp(24), dp(24), dp(24), dp(24));
         timeline.addView(chatEmpty, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams timelineParams = new LinearLayout.LayoutParams(-1, 0, 1); timelineParams.topMargin = dp(4); chatSection.addView(timeline, timelineParams);
+        LinearLayout.LayoutParams timelineParams = new LinearLayout.LayoutParams(-1, 0, 1); timelineParams.topMargin = dp(4); chatDetailSection.addView(timeline, timelineParams);
 
         LinearLayout composer = new LinearLayout(this); composer.setOrientation(LinearLayout.HORIZONTAL); composer.setGravity(Gravity.CENTER_VERTICAL); composer.setPadding(0, 0, 0, 0);
         FrameLayout inputShell = new FrameLayout(this);
         inputShell.setBackground(box(Color.rgb(25, 30, 27), Color.rgb(48, 56, 51), dp(24)));
         chatInput = new EditText(this); chatInput.setHint(tr("输入消息…")); chatInput.setTextSize(15); chatInput.setTextColor(Color.WHITE); chatInput.setHintTextColor(Color.rgb(127,132,128));
-        chatInput.setBackgroundColor(Color.TRANSPARENT); chatInput.setPadding(dp(50), dp(6), dp(50), dp(6)); chatInput.setMinHeight(dp(50)); chatInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START); chatInput.setIncludeFontPadding(false);
+        chatInput.setBackgroundColor(Color.TRANSPARENT); chatInput.setPadding(dp(50), dp(8), dp(50), dp(8)); chatInput.setMinHeight(dp(52)); chatInput.setGravity(Gravity.CENTER_VERTICAL | Gravity.START); chatInput.setIncludeFontPadding(false);
         chatInput.setMaxLines(4); chatInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         chatInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEND | android.view.inputmethod.EditorInfo.IME_FLAG_NO_ENTER_ACTION);
-        inputShell.addView(chatInput, new FrameLayout.LayoutParams(-1, dp(52), Gravity.CENTER_VERTICAL));
-        Button chatAttach = new Button(this); chatAttach.setText("＋"); chatAttach.setTextSize(23); chatAttach.setAllCaps(false); chatAttach.setTextColor(Color.rgb(0, 225, 132)); chatAttach.setContentDescription(english ? "Attach a file" : "发送文件");
-        chatAttach.setMinWidth(0); chatAttach.setMinHeight(0); chatAttach.setPadding(0, 0, 0, dp(2)); chatAttach.setBackgroundColor(Color.TRANSPARENT); chatAttach.setOnClickListener(v -> pickChatFile());
-        FrameLayout.LayoutParams attachParams = new FrameLayout.LayoutParams(dp(42), dp(42), Gravity.START | Gravity.CENTER_VERTICAL); attachParams.leftMargin = dp(4); inputShell.addView(chatAttach, attachParams);
+        inputShell.addView(chatInput, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_VERTICAL));
+        chatAttachButton = new Button(this); chatAttachButton.setText("＋"); chatAttachButton.setTextSize(23); chatAttachButton.setAllCaps(false); chatAttachButton.setTextColor(Color.rgb(0, 225, 132)); chatAttachButton.setContentDescription(english ? "Attach a file" : "发送文件");
+        chatAttachButton.setMinWidth(0); chatAttachButton.setMinHeight(0); chatAttachButton.setPadding(0, 0, 0, dp(2)); chatAttachButton.setBackgroundColor(Color.TRANSPARENT); chatAttachButton.setOnClickListener(v -> pickChatFile());
+        FrameLayout.LayoutParams attachParams = new FrameLayout.LayoutParams(dp(42), dp(42), Gravity.START | Gravity.CENTER_VERTICAL); attachParams.leftMargin = dp(4); inputShell.addView(chatAttachButton, attachParams);
         chatSendButton = new Button(this); chatSendButton.setText("➤"); chatSendButton.setTextSize(19); chatSendButton.setAllCaps(false); chatSendButton.setTextColor(Color.rgb(7, 26, 18)); chatSendButton.setContentDescription(english ? "Send message" : "发送消息");
         chatSendButton.setMinWidth(0); chatSendButton.setMinHeight(0); chatSendButton.setPadding(0, 0, 0, 0);
         chatSendButton.setBackground(box(Color.rgb(0, 205, 119), Color.rgb(0, 205, 119), dp(20))); chatSendButton.setEnabled(false); chatSendButton.setAlpha(0.45f); chatSendButton.setOnClickListener(v -> sendChatText());
         FrameLayout.LayoutParams sendParams = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.END | Gravity.CENTER_VERTICAL); sendParams.rightMargin = dp(5); inputShell.addView(chatSendButton, sendParams);
-        composer.addView(inputShell, new LinearLayout.LayoutParams(-1, dp(52)));
-        chatSection.addView(composer, new LinearLayout.LayoutParams(-1, -2));
+        composer.addView(inputShell, new LinearLayout.LayoutParams(-1, -2));
+        chatDetailSection.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         chatInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER && event.getAction() == android.view.KeyEvent.ACTION_DOWN && !event.isShiftPressed())) { sendChatText(); return true; }
             return false;
@@ -235,6 +319,14 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         deviceNameInput = input(deviceName()); deviceNameInput.setText(deviceName()); LinearLayout.LayoutParams nameInputParams = new LinearLayout.LayoutParams(-1, dp(46)); nameInputParams.topMargin = dp(6); nameRow.addView(deviceNameInput, nameInputParams);
         Button saveDeviceName = button("保存设备名称"); saveDeviceName.setTextSize(14); saveDeviceName.setOnClickListener(v -> { String name = deviceNameInput.getText().toString().trim(); if (name.isEmpty()) { toast(english ? "Device name cannot be empty" : "设备名称不能为空"); return; } getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).edit().putString("device_name", name).apply(); discovery.announceNow(); toast(english ? "Device name updated" : "设备名称已更新"); });
         LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(-1, dp(44)); saveParams.topMargin = dp(8); nameRow.addView(saveDeviceName, saveParams); deviceCard.addView(nameRow, params(-1, -2)); settingsSection.addView(deviceCard, params(-1, -2));
+
+        LinearLayout avatarRow = new LinearLayout(this); avatarRow.setOrientation(LinearLayout.HORIZONTAL); avatarRow.setGravity(Gravity.CENTER_VERTICAL); avatarRow.setPadding(dp(12), dp(8), dp(12), dp(8)); avatarRow.setBackground(box(Color.rgb(24, 30, 27), Color.rgb(42, 52, 46), dp(14)));
+        DeviceAvatar selfAvatar = new DeviceAvatar(true); selfAvatar.setAvatar(getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).getString("avatar_data", "")); avatarRow.addView(selfAvatar, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        TextView avatarLabel = text(english ? "Device avatar · nearby devices can see it" : "设备头像 · 附近设备可见", 13, Color.WHITE); LinearLayout.LayoutParams avatarLabelParams = new LinearLayout.LayoutParams(0, -2, 1); avatarLabelParams.leftMargin = dp(10); avatarRow.addView(avatarLabel, avatarLabelParams);
+        Button avatarButton = button(english ? "Upload" : "上传头像"); avatarButton.setOnClickListener(v -> pickAvatar()); avatarRow.addView(avatarButton, new LinearLayout.LayoutParams(-2, dp(40)));
+        LinearLayout.LayoutParams avatarRowParams = new LinearLayout.LayoutParams(-1, dp(62)); avatarRowParams.topMargin = dp(8); settingsSection.addView(avatarRow, avatarRowParams);
+        Button avatarReset = button(english ? "Reset avatar" : "恢复默认头像"); avatarReset.setOnClickListener(v -> { getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).edit().remove("avatar_data").apply(); discovery.announceNow(); selfAvatar.setAvatar(""); toast(english ? "Default avatar restored" : "已恢复默认头像"); });
+        LinearLayout.LayoutParams resetParams = new LinearLayout.LayoutParams(-1, dp(40)); resetParams.topMargin = dp(6); settingsSection.addView(avatarReset, resetParams);
 
         TextView networkTitle = text(english ? "Network & security" : "网络与安全", 14, Color.rgb(163, 185, 171)); networkTitle.setPadding(dp(2), dp(12), 0, 0); settingsSection.addView(networkTitle, params(-1, 34));
         LinearLayout networkCard = new LinearLayout(this); networkCard.setOrientation(LinearLayout.VERTICAL); networkCard.setPadding(dp(14), dp(10), dp(14), dp(10)); networkCard.setBackground(box(Color.rgb(24, 30, 27), Color.rgb(42, 52, 46), dp(14)));
@@ -267,13 +359,13 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         pageHost.addView(chatSection, new FrameLayout.LayoutParams(-1, -1)); pageHost.addView(page(settingsSection));
         root.addView(pageHost, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        bottomNav = new LinearLayout(this); bottomNav.setOrientation(LinearLayout.HORIZONTAL); bottomNav.setGravity(Gravity.CENTER); bottomNav.setPadding(dp(12), dp(6), dp(12), dp(8)); bottomNav.setBackgroundColor(Color.rgb(20,24,22));
+        bottomNav = new LinearLayout(this); bottomNav.setOrientation(LinearLayout.HORIZONTAL); bottomNav.setGravity(Gravity.CENTER); bottomNav.setPadding(dp(10), dp(5), dp(10), dp(6)); bottomNav.setBackgroundColor(COLOR_SURFACE);
         navConnect = navButton("连接"); navSend = navButton("发送"); navChat = navButton("聊天"); navSettings = navButton("设置");
         navConnect.setOnClickListener(v -> showPage(0)); navSend.setOnClickListener(v -> showPage(1));
-        navChat.setOnClickListener(v -> showPage(2)); navSettings.setOnClickListener(v -> showPage(3));
-        bottomNav.addView(navConnect, new LinearLayout.LayoutParams(0, dp(52), 1)); bottomNav.addView(navSend, new LinearLayout.LayoutParams(0, dp(52), 1));
-        bottomNav.addView(navChat, new LinearLayout.LayoutParams(0, dp(52), 1)); bottomNav.addView(navSettings, new LinearLayout.LayoutParams(0, dp(52), 1)); root.addView(bottomNav, new LinearLayout.LayoutParams(-1, dp(68)));
-        FrameLayout shell = new FrameLayout(this); shell.setBackgroundColor(Color.rgb(15, 18, 16)); shell.addView(root, new FrameLayout.LayoutParams(-1, -1));
+        navChat.setOnClickListener(v -> showChatInbox()); navSettings.setOnClickListener(v -> showPage(3));
+        bottomNav.addView(navConnect, new LinearLayout.LayoutParams(0, dp(48), 1)); bottomNav.addView(navSend, new LinearLayout.LayoutParams(0, dp(48), 1));
+        bottomNav.addView(navChat, new LinearLayout.LayoutParams(0, dp(48), 1)); bottomNav.addView(navSettings, new LinearLayout.LayoutParams(0, dp(48), 1)); root.addView(bottomNav, new LinearLayout.LayoutParams(-1, dp(60)));
+        FrameLayout shell = new FrameLayout(this); shell.setBackgroundColor(COLOR_BACKGROUND); shell.addView(root, new FrameLayout.LayoutParams(-1, -1));
         incomingOverlay = buildIncomingOverlay(); incomingOverlay.setVisibility(View.GONE);
         FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP); overlayParams.setMargins(dp(16), dp(130), dp(16), 0); shell.addView(incomingOverlay, overlayParams);
         setContentView(shell);
@@ -301,8 +393,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     }
 
     private ScrollView page(View content) {
-        ScrollView page = new ScrollView(this); page.setFillViewport(true); page.setBackgroundColor(Color.rgb(15, 18, 16));
-        LinearLayout wrapper = new LinearLayout(this); wrapper.setOrientation(LinearLayout.VERTICAL); wrapper.setPadding(dp(24), dp(4), dp(24), dp(22)); wrapper.addView(content, new LinearLayout.LayoutParams(-1, -2));
+        ScrollView page = new ScrollView(this); page.setFillViewport(true); page.setBackgroundColor(COLOR_BACKGROUND); page.setClipToPadding(false);
+        LinearLayout wrapper = new LinearLayout(this); wrapper.setOrientation(LinearLayout.VERTICAL); wrapper.setPadding(dp(18), dp(2), dp(18), dp(14)); wrapper.addView(content, new LinearLayout.LayoutParams(-1, -2));
         page.addView(wrapper, new ScrollView.LayoutParams(-1, -2)); return page;
     }
 
@@ -310,16 +402,19 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         if (pageHost == null) return;
         activePageIndex = index;
         boolean inChat = index == 2;
-        if (chatPeerHeader != null) chatPeerHeader.setVisibility(inChat ? View.VISIBLE : View.GONE);
+        if (headerSpacer != null) headerSpacer.setVisibility(inChat && chatConversationOpen ? View.GONE : View.VISIBLE);
+        if (chatPeerHeader != null) chatPeerHeader.setVisibility(inChat && chatConversationOpen ? View.VISIBLE : View.GONE);
+        if (languageButton != null) languageButton.setVisibility(inChat ? View.GONE : View.VISIBLE);
+        if (groupActionButton != null) groupActionButton.setVisibility(inChat ? View.VISIBLE : View.GONE);
         if (headerSubtitle != null) headerSubtitle.setVisibility(inChat ? View.GONE : View.VISIBLE);
         if (status != null) status.setVisibility(inChat ? View.GONE : View.VISIBLE);
-        if (inChat) updateChatHeader();
+        if (inChat && chatConversationOpen) updateChatHeader();
         if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
         if (chatBackCallback != null) chatBackCallback.setEnabled(index == 2);
         for (int i = 0; i < pageHost.getChildCount(); i++) pageHost.getChildAt(i).setVisibility(i == index ? View.VISIBLE : View.GONE);
         Button[] nav = { navConnect, navSend, navChat, navSettings };
-        for (int i = 0; i < nav.length; i++) if (nav[i] != null) { nav[i].setTextColor(i == index ? Color.rgb(0, 232, 135) : Color.rgb(163, 167, 164)); nav[i].setSelected(i == index); nav[i].setBackground(i == index ? box(Color.rgb(17, 45, 32), Color.rgb(23, 92, 60), dp(12)) : new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); }
-        // 进入聊天页时刷新一次，并把对端消息标记为已读。
+        for (int i = 0; i < nav.length; i++) if (nav[i] != null) { nav[i].setTextColor(i == index ? COLOR_ACCENT_BRIGHT : COLOR_TEXT_SECONDARY); nav[i].setSelected(i == index); nav[i].setBackground(i == index ? box(Color.rgb(17, 45, 32), Color.rgb(23, 92, 60), dp(12)) : new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)); }
+        // 会话列表只显示摘要；进入某条对话后才把消息标记为已读。
         if (index == 2) { renderChat(); }
     }
 
@@ -334,14 +429,165 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         return host.isEmpty() ? "unknown" : "host-" + host;
     }
 
+    private String chatAliasKey() {
+        String peer = selectedDirectPeer.isEmpty() ? chatPeerKey() : selectedDirectPeer;
+        String host = peer.startsWith("host-") ? peer.substring(5) : "";
+        String id = host.isEmpty() ? "" : getPreferences(MODE_PRIVATE).getString("paired_host_device:" + host, "");
+        return id.isEmpty() ? peer : id;
+    }
+
     /** 本地已读位点（每个对端独立）。 */
     private long readPref(String peer) { return getPreferences(MODE_PRIVATE).getLong("chat_read_" + peer, 0); }
     private void setReadPref(String peer, long ts) { getPreferences(MODE_PRIVATE).edit().putLong("chat_read_" + peer, ts).apply(); }
 
+    private void showChatInbox() {
+        chatConversationOpen = false;
+        activeGroupId = "";
+        selectedDirectPeer = "";
+        if (chatInput != null) {
+            chatInput.clearFocus();
+            android.view.inputmethod.InputMethodManager keyboard = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (keyboard != null) keyboard.hideSoftInputFromWindow(chatInput.getWindowToken(), 0);
+        }
+        showPage(2);
+    }
+
+    private void openChatConversation(String groupId) {
+        activeGroupId = groupId == null ? "" : groupId;
+        selectedDirectPeer = activeGroupId.isEmpty() ? chatPeerKey() : "";
+        chatConversationOpen = true;
+        showPage(2);
+    }
+
+    private void openDirectConversation(String peer) {
+        activeGroupId = "";
+        selectedDirectPeer = peer;
+        chatConversationOpen = true;
+        showPage(2);
+    }
+
+    private String directChatName(String peer) {
+        String host = peer.startsWith("host-") ? peer.substring(5) : "";
+        SharedPreferences preferences = getPreferences(MODE_PRIVATE);
+        String peerName = host.isEmpty() ? "" : preferences.getString("paired_host_name:" + host, "");
+        if (peerName.isEmpty() && !host.isEmpty() && host.equals(preferences.getString("last_host", "")))
+            peerName = preferences.getString("last_connect_name", "");
+        String id = host.isEmpty() ? "" : preferences.getString("paired_host_device:" + host, "");
+        String alias = chatStore == null ? "" : chatStore.alias(id.isEmpty() ? peer : id);
+        if (!alias.isEmpty()) return alias;
+        if ("unknown".equals(peer)) return english ? "Earlier chat history" : "旧版聊天记录";
+        if (!peerName.isEmpty()) return peerName;
+        return host.isEmpty() ? (english ? "Paired computer" : "已配对的电脑") : host;
+    }
+
+    private void renderChatInbox() {
+        if (chatInboxList == null) return;
+        chatInboxList.removeAllViews();
+        TextView directSection = text(english ? "DIRECT CHAT" : "单聊", 11, Color.rgb(105, 144, 121));
+        directSection.setGravity(Gravity.CENTER_VERTICAL); chatInboxList.addView(directSection, new LinearLayout.LayoutParams(-1, dp(34)));
+        String currentPeer = chatPeerKey();
+        java.util.LinkedHashSet<String> knownPeers = new java.util.LinkedHashSet<>();
+        if (!"unknown".equals(currentPeer)) knownPeers.add(currentPeer);
+        for (String key : getPreferences(MODE_PRIVATE).getAll().keySet()) {
+            if (key.startsWith("paired_host:") && !getPreferences(MODE_PRIVATE).getString(key, "").isEmpty())
+                knownPeers.add("host-" + key.substring("paired_host:".length()));
+        }
+        for (String peer : chatStore.peerIds()) if (!chatStore.list(peer).isEmpty()) knownPeers.add(peer);
+        if (knownPeers.isEmpty()) knownPeers.add(currentPeer);
+        java.util.List<String> directPeers = new ArrayList<>(knownPeers);
+        directPeers.sort((a, b) -> Long.compare(chatStore.lastTs(b), chatStore.lastTs(a)));
+        for (String peer : directPeers) {
+            java.util.List<org.json.JSONObject> directMessages = chatStore.list(peer);
+            org.json.JSONObject directLast = directMessages.isEmpty() ? null : directMessages.get(directMessages.size() - 1);
+            boolean online = peer.equals(currentPeer) && client != null && client.isConnected();
+            String directPreview = directLast == null
+                    ? (online ? (english ? "Connected · start a conversation" : "已连接 · 开始聊天") : (english ? "Connect to this computer to chat" : "连接此电脑后开始聊天"))
+                    : ("file".equals(directLast.optString("kind")) ? (english ? "File · " : "文件 · ") + directLast.optString("fileName") : directLast.optString("text"));
+            chatInboxList.addView(conversationRow(false, directChatName(peer), directPreview,
+                    directLast == null ? "" : chatInboxTimestamp(directLast.optLong("ts")),
+                    chatStore.unreadCount(peer, readPref(peer)), v -> openDirectConversation(peer)));
+        }
+
+        TextView groupSection = text(english ? "GROUP CHATS" : "群聊", 11, Color.rgb(105, 144, 121));
+        groupSection.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams groupSectionParams = new LinearLayout.LayoutParams(-1, dp(40)); groupSectionParams.topMargin = dp(16);
+        chatInboxList.addView(groupSection, groupSectionParams);
+        java.util.List<org.json.JSONObject> groups = groupStore.list();
+        if (groups.isEmpty()) {
+            TextView emptyGroups = text(english ? "No groups yet · tap + to create or join one" : "暂无群聊 · 点击右上角＋新建或加入", 13, Color.rgb(127, 145, 134));
+            emptyGroups.setPadding(dp(4), dp(14), 0, dp(14)); chatInboxList.addView(emptyGroups, new LinearLayout.LayoutParams(-1, -2));
+        }
+        for (org.json.JSONObject group : groups) {
+            org.json.JSONObject last = group.optJSONObject("lastMessage");
+            org.json.JSONArray messages = group.optJSONArray("messages");
+            if (last == null && messages != null && messages.length() > 0) last = messages.optJSONObject(messages.length() - 1);
+            org.json.JSONArray members = group.optJSONArray("members");
+            String preview = last == null ? (members == null ? "1" : String.valueOf(members.length())) + (english ? " members" : " 位成员")
+                    : last.optString("senderName") + ": " + ("file".equals(last.optString("kind")) ? (english ? "File · " : "文件 · ") + last.optString("fileName") : last.optString("text"));
+            String groupId = group.optString("id");
+            chatInboxList.addView(conversationRow(true, group.optString("name", english ? "Group chat" : "群聊"), preview,
+                    last == null ? "" : chatInboxTimestamp(last.optLong("ts")), group.optInt("unread", 0), v -> openChatConversation(groupId)));
+        }
+    }
+
+    private View conversationRow(boolean group, String title, String preview, String time, int unread, View.OnClickListener action) {
+        LinearLayout holder = new LinearLayout(this); holder.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(8), dp(4), dp(8)); row.setMinimumHeight(dp(76)); row.setClickable(true); row.setFocusable(true);
+        android.util.TypedValue ripple = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true) && ripple.resourceId != 0) row.setBackgroundResource(ripple.resourceId);
+        row.setContentDescription(title + (preview.isEmpty() ? "" : "，" + preview)); row.setOnClickListener(action);
+        if (group) {
+            TextView avatar = text(english ? "G" : "群", 17, Color.rgb(0, 225, 132)); avatar.setGravity(Gravity.CENTER);
+            avatar.setBackground(box(Color.rgb(17, 52, 36), Color.rgb(26, 95, 59), dp(22)));
+            row.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        } else row.addView(new DeviceAvatar(false), new LinearLayout.LayoutParams(dp(44), dp(44)));
+        LinearLayout info = new LinearLayout(this); info.setOrientation(LinearLayout.VERTICAL); info.setGravity(Gravity.CENTER_VERTICAL); info.setPadding(dp(12), 0, dp(6), 0);
+        TextView name = text(title, 15, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setSingleLine(true); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        info.addView(name, new LinearLayout.LayoutParams(-1, dp(24)));
+        TextView summary = text(preview.replace('\n', ' '), 12, Color.rgb(127, 145, 134)); summary.setSingleLine(true); summary.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        info.addView(summary, new LinearLayout.LayoutParams(-1, dp(20))); row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout trailing = new LinearLayout(this); trailing.setOrientation(LinearLayout.VERTICAL); trailing.setGravity(Gravity.END);
+        TextView timestamp = text(time, 10, Color.rgb(107, 121, 112)); timestamp.setGravity(Gravity.END); timestamp.setSingleLine(true);
+        trailing.addView(timestamp, new LinearLayout.LayoutParams(-1, dp(20)));
+        if (unread > 0) {
+            TextView badge = text(String.valueOf(Math.min(unread, 99)), 11, Color.rgb(7, 26, 18)); badge.setGravity(Gravity.CENTER);
+            badge.setBackground(box(Color.rgb(0, 205, 119), Color.rgb(0, 205, 119), dp(10)));
+            LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(24), dp(20)); badgeParams.gravity = Gravity.END; trailing.addView(badge, badgeParams);
+        }
+        row.addView(trailing, new LinearLayout.LayoutParams(dp(58), -2)); holder.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        View divider = new View(this); divider.setBackgroundColor(Color.rgb(34, 43, 37));
+        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, dp(1)); dividerParams.leftMargin = dp(56); holder.addView(divider, dividerParams);
+        return holder;
+    }
+
     private void renderChat() {
         if (chatList == null) return;
+        if (chatInboxSection != null) chatInboxSection.setVisibility(chatConversationOpen ? View.GONE : View.VISIBLE);
+        if (chatDetailSection != null) chatDetailSection.setVisibility(chatConversationOpen ? View.VISIBLE : View.GONE);
+        if (headerSpacer != null && activePageIndex == 2) headerSpacer.setVisibility(chatConversationOpen ? View.GONE : View.VISIBLE);
+        if (chatPeerHeader != null && activePageIndex == 2) chatPeerHeader.setVisibility(chatConversationOpen ? View.VISIBLE : View.GONE);
+        if (!chatConversationOpen) { renderChatInbox(); return; }
+        if (chatDetailTitle != null) chatDetailTitle.setText(activeGroupId.isEmpty() ? (english ? "Direct chat" : "单聊") : (english ? "Group chat" : "群聊"));
+        if (chatDetailAction != null) chatDetailAction.setText(activeGroupId.isEmpty() ? (english ? "Nickname" : "备注") : (english ? "Manage" : "管理"));
         updateChatHeader();
-        String peer = chatPeerKey();
+        if (!activeGroupId.isEmpty()) {
+            chatList.removeAllViews(); chatProgressViews.clear(); chatProgressBars.clear();
+            org.json.JSONObject group = groupStore.get(activeGroupId); org.json.JSONArray messages = group == null ? null : group.optJSONArray("messages");
+            chatEmpty.setVisibility(messages == null || messages.length() == 0 ? View.VISIBLE : View.GONE);
+            if (messages != null) for (int i=0;i<messages.length();i++) {
+                org.json.JSONObject m=messages.optJSONObject(i); if(m==null)continue;
+                org.json.JSONObject bubble;
+                try { bubble=new org.json.JSONObject(m.toString()).put("dir",deviceId.equals(m.optString("senderId"))?"out":"in").put("status",m.optString("status","sent")).put("isGroup",true); } catch(Exception ignored){ bubble=m; }
+                chatList.addView(chatBubble(bubble));
+            }
+            if (group != null) groupStore.markRead(activeGroupId);
+            if(messages!=null&&messages.length()>0&&chatScroll!=null)chatScroll.post(()->chatScroll.fullScroll(View.FOCUS_DOWN));
+            if(chatAttachButton!=null)chatAttachButton.setEnabled(true);
+            return;
+        }
+        if(chatAttachButton!=null)chatAttachButton.setEnabled(true);
+        String peer = selectedDirectPeer.isEmpty() ? chatPeerKey() : selectedDirectPeer;
         chatList.removeAllViews();
         chatProgressViews.clear();
         chatProgressBars.clear();
@@ -359,11 +605,27 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
     private void updateChatHeader() {
         if (chatPeerName == null) return;
-        String host = ipInput == null ? "" : ipInput.getText().toString().trim();
-        if (host.isEmpty()) host = getPreferences(MODE_PRIVATE).getString("last_host", "");
-        String peerName = host.isEmpty() ? "" : getPreferences(MODE_PRIVATE).getString("paired_host_name:" + host, "");
-        chatPeerName.setText(peerName.isEmpty() ? (english ? "Paired computer" : "已配对的电脑") : peerName);
-        boolean online = client != null && client.isConnected();
+        if (!activeGroupId.isEmpty()) {
+            org.json.JSONObject group=groupStore.get(activeGroupId);
+            if(group==null){chatPeerName.setText(english?"Group chat":"群聊");return;}
+            chatPeerName.setText(group.optString("name",english?"Group chat":"群聊"));
+            int count=group.optJSONArray("members")==null?1:group.optJSONArray("members").length();
+            boolean hosting=deviceId.equals(group.optString("ownerId"));
+            GroupClient groupClient=groupClients.get(activeGroupId);
+            boolean online=hosting||groupClient!=null&&groupClient.isOnline();
+            chatConnectionLabel.setText((count)+(english?" members · ":" 位成员 · ")+(online?(hosting?(english?"hosting":"本机主持"):(english?"online":"已连接")):(english?"host offline · reconnecting":"群主离线 · 正在重连")));
+            if(chatOnlineDot!=null){int color=online?Color.rgb(0,220,130):Color.rgb(115,125,119);chatOnlineDot.setBackground(box(color,color,dp(5)));}
+            if(chatPeerAvatar!=null)chatPeerAvatar.setVisibility(View.GONE);
+            if(chatGroupAvatar!=null)chatGroupAvatar.setVisibility(View.VISIBLE);
+            return;
+        }
+        String peer = selectedDirectPeer.isEmpty() ? chatPeerKey() : selectedDirectPeer;
+        if(chatPeerAvatar!=null)chatPeerAvatar.setVisibility(View.VISIBLE);
+        if(chatGroupAvatar!=null)chatGroupAvatar.setVisibility(View.GONE);
+        chatPeerName.setText(directChatName(peer));
+        boolean selectedConnection = peer.equals(chatPeerKey());
+        if (chatPeerAvatar != null) chatPeerAvatar.setAvatar(selectedConnection ? getPreferences(MODE_PRIVATE).getString("remote_avatar_data", "") : "");
+        boolean online = selectedConnection && client != null && client.isConnected();
         if (chatConnectionLabel != null) chatConnectionLabel.setText(online
                 ? (english ? "Online · direct local connection" : "在线 · 局域网直连")
                 : (english ? "Offline · local chat history" : "离线 · 可查看本地聊天记录"));
@@ -371,6 +633,197 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             int dotColor = online ? Color.rgb(0, 220, 130) : Color.rgb(115, 125, 119);
             chatOnlineDot.setBackground(box(dotColor, dotColor, dp(6)));
         }
+    }
+
+    private void handleGroupHostEvent(org.json.JSONObject event) {
+        String kind=event.optString("kind"),id=event.optString("groupId");
+        if("group:message".equals(kind)){org.json.JSONObject message=event.optJSONObject("message");if(message!=null)groupStore.append(id,message,!deviceId.equals(message.optString("senderId")));}
+        else if("group:file".equals(kind)) handleGroupFileEvent(id,event);
+        else if("group:members".equals(kind))groupStore.setMembers(id,event.optJSONArray("members"));
+        else if("group:dissolved".equals(kind))groupStore.remove(id);
+        if("group:dissolved".equals(kind) && chatConversationOpen && id.equals(activeGroupId)) showChatInbox();
+        else if(activePageIndex == 2) renderChat();
+        if("error".equals(kind))toast(english?"Group host service failed":"群聊主持服务启动失败");
+    }
+
+    private String localWifiIp() {
+        try { android.net.wifi.WifiManager wifi=(android.net.wifi.WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE); android.net.DhcpInfo d=wifi==null?null:wifi.getDhcpInfo(); if(d!=null&&d.ipAddress!=0){String ip=java.net.InetAddress.getByAddress(new byte[]{(byte)d.ipAddress,(byte)(d.ipAddress>>>8),(byte)(d.ipAddress>>>16),(byte)(d.ipAddress>>>24)}).getHostAddress();return ip==null?"127.0.0.1":ip;} } catch(Exception ignored){}
+        return "127.0.0.1";
+    }
+
+    private void showGroupActions() {
+        LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.VERTICAL);
+        actions.setPadding(dp(18), dp(2), dp(18), dp(6));
+        View create = groupActionRow("＋", english ? "Create group" : "新建群聊",
+                english ? "Start a conversation on this LAN" : "在局域网内发起新的对话");
+        View join = groupActionRow("→", english ? "Join group" : "加入群聊",
+                english ? "Enter a 6-digit invite code" : "输入 6 位群聊口令加入");
+        actions.addView(create, new LinearLayout.LayoutParams(-1, dp(68)));
+        actions.addView(join, new LinearLayout.LayoutParams(-1, dp(68)));
+        androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(english ? "Group chats" : "群聊").setView(actions)
+                .setNegativeButton(english ? "Cancel" : "取消", null).create();
+        create.setOnClickListener(v -> { dialog.dismiss(); createGroupDialog(); });
+        join.setOnClickListener(v -> { dialog.dismiss(); joinGroupDialog(); });
+        dialog.show();
+    }
+
+    private View groupActionRow(String glyph, String title, String description) {
+        return groupActionRow(glyph, title, description, false);
+    }
+
+    private View groupActionRow(String glyph, String title, String description, boolean destructive) {
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(5), dp(4), dp(5)); row.setClickable(true); row.setFocusable(true);
+        android.util.TypedValue ripple = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true) && ripple.resourceId != 0) row.setBackgroundResource(ripple.resourceId);
+        int accent = destructive ? Color.rgb(249, 113, 119) : Color.rgb(0, 225, 132);
+        TextView icon = text(glyph, 20, accent); icon.setGravity(Gravity.CENTER);
+        icon.setBackground(box(destructive ? Color.rgb(57, 30, 34) : Color.rgb(17, 52, 36),
+                destructive ? Color.rgb(113, 51, 57) : Color.rgb(26, 95, 59), dp(19)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        LinearLayout labels = new LinearLayout(this); labels.setOrientation(LinearLayout.VERTICAL); labels.setPadding(dp(14), 0, 0, 0);
+        TextView name = text(title, 15, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        labels.addView(name, new LinearLayout.LayoutParams(-1, dp(24)));
+        TextView hint = text(description, 12, Color.rgb(154, 168, 160)); labels.addView(hint, new LinearLayout.LayoutParams(-1, dp(20)));
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private void createGroupDialog() {
+        LinearLayout form = new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(4), dp(4), dp(4), dp(2));
+        TextView hint = text(english ? "Give this group a clear name" : "给群聊设置一个清晰的名称", 12, COLOR_TEXT_SECONDARY);
+        form.addView(hint, new LinearLayout.LayoutParams(-1, dp(24)));
+        EditText name = input(english ? "Group name" : "群聊名称");
+        name.setTextSize(15); name.setSingleLine(true); name.setPadding(dp(15), 0, dp(15), 0);
+        form.addView(name, new LinearLayout.LayoutParams(-1, dp(50)));
+        androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(english ? "Create group" : "新建群聊").setView(form)
+            .setNegativeButton(english ? "Cancel" : "取消", null).setPositiveButton(english ? "Create" : "创建", (d,w)->{
+                String title=name.getText().toString().trim();if(title.isEmpty()){toast(english?"Enter a group name":"请输入群聊名称");return;}
+                String id=UUID.randomUUID().toString(),token=randomGroupToken(),ip=localWifiIp();
+                org.json.JSONObject group=groupStore.create(id,title,deviceId,deviceName(),ip,GroupHostService.PORT,token,uniqueGroupCode(id),getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).getString("avatar_data", ""));
+                if(group==null){toast(english?"Unable to create group":"创建群聊失败");return;}
+                GroupHostService.start(this);openChatConversation(id);showGroupInvite(group);
+            }).create();
+        dialog.setOnShowListener(d -> { dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setTextColor(COLOR_ACCENT_BRIGHT); dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE).setTextColor(COLOR_TEXT_SECONDARY); });
+        dialog.show();
+    }
+
+    private String randomGroupToken(){byte[] b=new byte[24];new java.security.SecureRandom().nextBytes(b);return android.util.Base64.encodeToString(b,android.util.Base64.URL_SAFE|android.util.Base64.NO_WRAP|android.util.Base64.NO_PADDING);}
+    private String randomGroupCode(){return String.valueOf(100000+new java.security.SecureRandom().nextInt(900000));}
+    private String uniqueGroupCode(String exceptId){for(int n=0;n<20;n++){String code=randomGroupCode();boolean used=false;for(org.json.JSONObject g:groupStore.list())if(!exceptId.equals(g.optString("id"))&&code.equals(g.optString("inviteCode"))&&g.optLong("inviteExpiresAt")>System.currentTimeMillis()){used=true;break;}if(!used)return code;}return randomGroupCode();}
+
+    private void showGroupInvite(org.json.JSONObject group){
+        try{
+            LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(20),dp(12),dp(20),dp(8));
+            TextView hint=text(english?"Enter this code on a device connected to the same LAN":"让对方在同一局域网内输入此口令加入",13,Color.rgb(154,168,160));content.addView(hint,params(-1,-2));
+            TextView code=text(group.optString("inviteCode"),34,Color.rgb(0,225,132));code.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));code.setGravity(Gravity.CENTER);code.setLetterSpacing(0.22f);code.setPadding(0,dp(18),0,dp(16));content.addView(code,params(-1,76));
+            long minutes=Math.max(0,(group.optLong("inviteExpiresAt")-System.currentTimeMillis()+59999)/60000);String expiryLabel=minutes==0?(english?"Code expired · refresh to continue":"口令已过期 · 请刷新后继续"):(english?"Expires in "+minutes+" min · same LAN only":"口令还剩 "+minutes+" 分钟 · 仅限同一局域网");
+            TextView expiry=text(expiryLabel,12,Color.rgb(126,143,132));expiry.setGravity(Gravity.CENTER);content.addView(expiry,params(-1,24));
+            new androidx.appcompat.app.AlertDialog.Builder(this).setTitle(english?"Group invite code":"群聊邀请口令").setView(content)
+                .setPositiveButton(english?"Copy code":"复制口令",(d,w)->copyGroupCode(group.optString("inviteCode")))
+                .setNegativeButton(english?"Done":"完成",null).show();
+        }catch(Exception ignored){}
+    }
+
+    private void copyGroupCode(String code){ClipboardManager clipboard=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);if(clipboard!=null)clipboard.setPrimaryClip(ClipData.newPlainText("Nearby Transfer group code",code));toast(english?"Group code copied":"群聊口令已复制");}
+    private void refreshGroupInvite(org.json.JSONObject group){String id=group.optString("id"),code=uniqueGroupCode(id);long expires=System.currentTimeMillis()+10*60*1000L;groupStore.updateInvite(id,code,expires);showGroupInvite(groupStore.get(id));}
+
+    private void joinGroupDialog(){
+        LinearLayout form = new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(4), dp(4), dp(4), dp(2));
+        TextView hint = text(english ? "Enter the 6-digit code shared by the host. Both devices must be on the same LAN." : "输入群主分享的 6 位口令。两台设备需要连接同一个局域网。", 12, COLOR_TEXT_SECONDARY);
+        hint.setLineSpacing(dp(2), 1f); form.addView(hint, new LinearLayout.LayoutParams(-1, dp(42)));
+        EditText inviteCode = input(english ? "6-digit group code" : "输入 6 位群聊口令"); inviteCode.setInputType(InputType.TYPE_CLASS_NUMBER); inviteCode.setLetterSpacing(0.12f); inviteCode.setTextSize(20); inviteCode.setGravity(Gravity.CENTER); inviteCode.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); inviteCode.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(6)});
+        form.addView(inviteCode, new LinearLayout.LayoutParams(-1, dp(54)));
+        androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this).setTitle(english ? "Join group" : "加入群聊").setView(form)
+            .setNegativeButton(english ? "Cancel" : "取消", null).setPositiveButton(english ? "Find group" : "查找并加入", (d,w)->joinGroupCode(inviteCode.getText().toString().trim())).create();
+        dialog.setOnShowListener(d -> { dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setTextColor(COLOR_ACCENT_BRIGHT); dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE).setTextColor(COLOR_TEXT_SECONDARY); });
+        dialog.show();
+    }
+
+    private void joinGroupCode(String code){
+        if(!code.matches("\\d{6}")){toast(english?"Enter a 6-digit group code":"请输入 6 位群聊口令");return;}
+        toast(english?"Searching this LAN…":"正在局域网查找群聊…");
+        GroupInviteResolver.resolve(this,code,(invite,error)->{if(invite==null){toast(error);return;}connectToGroup(invite);});
+    }
+
+    private void connectToGroup(org.json.JSONObject invite){
+        try{
+            if(!"nearby-group-v1".equals(invite.optString("scheme"))||invite.optString("host").isEmpty()||invite.optString("token").isEmpty())throw new IllegalArgumentException();
+            String id=invite.getString("groupId");groupStore.join(invite,deviceId,deviceName());
+            GroupClient old=groupClients.remove(id);if(old!=null)old.close();
+            GroupClient client=new GroupClient(invite,deviceId,deviceName(),getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).getString("avatar_data", ""),event->runOnUiThread(()->handleJoinedGroupEvent(id,event)));groupClients.put(id,client);client.connect();
+            openChatConversation(id);
+        }catch(Exception e){toast(english?"Could not join this group":"加入群聊失败");}
+    }
+
+    private void handleJoinedGroupEvent(String id,org.json.JSONObject event){
+        String type=event.optString("type");
+        if("joined".equals(type)){org.json.JSONObject group=event.optJSONObject("group");if(group!=null)groupStore.mergeRemote(id,group);}
+        else if("message".equals(type)){org.json.JSONObject message=event.optJSONObject("message");if(message!=null)groupStore.append(id,message,!deviceId.equals(message.optString("senderId")));}
+        else if("file_start".equals(type)||"file_chunk".equals(type)||"file_end".equals(type)) handleGroupFileEvent(id,event);
+        else if("members".equals(type))groupStore.setMembers(id,event.optJSONArray("members"));
+        else if("removed".equals(type)||"dissolved".equals(type)||"error".equals(type)){groupStore.remove(id);GroupClient c=groupClients.remove(id);if(c!=null)c.close();if("error".equals(type))toast(english?"Could not join group host":"连接群主失败");if(chatConversationOpen && id.equals(activeGroupId)){showChatInbox();return;}}
+        if(activePageIndex == 2)renderChat();
+    }
+
+    private void manageActiveGroup(){
+        if(activeGroupId.isEmpty())return;org.json.JSONObject g=groupStore.get(activeGroupId);if(g==null)return;
+        boolean owner=deviceId.equals(g.optString("ownerId"));org.json.JSONArray members=g.optJSONArray("members");
+        if(!owner){new androidx.appcompat.app.AlertDialog.Builder(this).setTitle(g.optString("name")).setMessage(english?"Leave this group chat?":"退出这个群聊？").setNegativeButton(english?"Cancel":"取消",null).setPositiveButton(english?"Leave":"退出",(d,w)->{GroupClient c=groupClients.remove(activeGroupId);if(c!=null){c.leave();c.close();}else GroupHostService.leave(this,activeGroupId);groupStore.remove(activeGroupId);showChatInbox();}).show();return;}
+        java.util.List<String> names=new ArrayList<>(),ids=new ArrayList<>();if(members!=null)for(int i=0;i<members.length();i++){org.json.JSONObject m=members.optJSONObject(i);if(m==null||deviceId.equals(m.optString("deviceId")))continue;ids.add(m.optString("deviceId"));names.add(m.optString("name","设备")+"  ·  "+m.optString("deviceId"));}
+        LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.VERTICAL);
+        actions.setPadding(dp(18), dp(2), dp(18), dp(6));
+        View invite = groupActionRow("#", english ? "Show invite code" : "显示邀请口令",
+                english ? "Share the 6-digit code" : "分享 6 位口令，邀请设备加入");
+        View refresh = groupActionRow("↻", english ? "Refresh invite code" : "刷新邀请口令",
+                english ? "The previous code will stop working" : "旧口令会立即失效");
+        View remove = groupActionRow("−", english ? "Remove member" : "移除成员",
+                english ? "Choose a device to remove" : "选择要移出群聊的设备");
+        View dissolve = groupActionRow("×", english ? "Dissolve group" : "解散群聊",
+                english ? "Remove this group for everyone" : "移除所有成员并结束群聊", true);
+        for (View action : new View[]{invite, refresh, remove, dissolve})
+            actions.addView(action, new LinearLayout.LayoutParams(-1, dp(68)));
+        androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(g.optString("name")).setView(actions)
+                .setNegativeButton(english ? "Close" : "关闭", null).create();
+        invite.setOnClickListener(v -> { dialog.dismiss(); showGroupInvite(g); });
+        refresh.setOnClickListener(v -> { dialog.dismiss(); refreshGroupInvite(g); });
+        remove.setOnClickListener(v -> {
+            dialog.dismiss();
+            if (names.isEmpty()) { toast(english ? "No other members" : "没有其他成员"); return; }
+            LinearLayout memberList = new LinearLayout(this); memberList.setOrientation(LinearLayout.VERTICAL);
+            memberList.setPadding(dp(18), dp(2), dp(18), dp(6));
+            androidx.appcompat.app.AlertDialog memberDialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle(english ? "Select member" : "选择要移除的设备").setView(memberList)
+                    .setNegativeButton(english ? "Cancel" : "取消", null).create();
+            for (int i = 0; i < ids.size(); i++) {
+                final String target = ids.get(i);
+                View member = groupActionRow("▣", names.get(i),
+                        english ? "Tap to remove from this group" : "点击移出群聊");
+                memberList.addView(member, new LinearLayout.LayoutParams(-1, dp(68)));
+                member.setOnClickListener(x -> {
+                    memberDialog.dismiss();
+                    if (g.optString("ownerId").equals(deviceId)) GroupHostService.removeMember(this, g.optString("id"), target);
+                    else { GroupClient c = groupClients.get(g.optString("id")); if (c != null) c.remove(target); }
+                });
+            }
+            memberDialog.show();
+        });
+        dissolve.setOnClickListener(v -> {
+            dialog.dismiss();
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setMessage(english ? "Dissolve this group for everyone?" : "确定解散群聊并移除所有成员？")
+                    .setNegativeButton(english ? "Cancel" : "取消", null)
+                    .setPositiveButton(english ? "Dissolve" : "解散", (x, i) -> {
+                        String id = g.optString("id");
+                        GroupHostService.dissolve(this, id);
+                        GroupClient c = groupClients.remove(id); if (c != null) { c.dissolve(); c.close(); }
+                        groupStore.remove(id); showChatInbox();
+                    }).show();
+        });
+        dialog.show();
     }
 
     /** 构造一条消息气泡（自己发的靠右、绿色；对方发的靠左、深色）。 */
@@ -384,7 +837,13 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         LinearLayout bubble = new LinearLayout(this); bubble.setOrientation(LinearLayout.VERTICAL);
         bubble.setPadding(dp(12), dp(9), dp(12), dp(9));
         bubble.setBackground(solidBox(out ? Color.rgb(18, 61, 43) : Color.rgb(32, 38, 34), dp(16)));
-        int maxWidth = Math.round(getResources().getDisplayMetrics().widthPixels * 0.72f);
+        // Reserve room for the avatar and keep the bubble inside the readable
+        // column. A wrap-content body could otherwise be measured against the
+        // full row and clip long messages or filenames on narrow phones.
+        int bodyWidth = Math.round(getResources().getDisplayMetrics().widthPixels * 0.76f);
+        int maxWidth = Math.max(dp(180), bodyWidth - dp(24));
+
+        if (message.optBoolean("isGroup", false) && !out) { TextView sender=text(message.optString("senderName","成员"),11,Color.rgb(0,225,132)); LinearLayout.LayoutParams senderParams=new LinearLayout.LayoutParams(-2,-2);senderParams.bottomMargin=dp(4);bubble.addView(sender,senderParams); }
 
         if ("file".equals(kind)) {
             String fileName = message.optString("fileName", "文件");
@@ -400,7 +859,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
                 LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(dp(176), dp(132)); previewParams.bottomMargin = dp(7); bubble.addView(previewFrame, previewParams);
                 loadThumbnail(attachmentUri, preview, fallback, fileName); previewFrame.setOnClickListener(v -> openChatAttachment(message));
             }
-            TextView name = text(fileName, 14, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setMaxWidth(maxWidth); name.setOnLongClickListener(v -> { copyChatMessage(message); return true; }); bubble.addView(name);
+            TextView name = text(fileName, 14, Color.WHITE); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setMaxWidth(maxWidth); name.setSingleLine(false); name.setMaxLines(Integer.MAX_VALUE); name.setEllipsize(null); name.setHorizontallyScrolling(false); if (Build.VERSION.SDK_INT >= 23) name.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_SIMPLE); name.setOnLongClickListener(v -> { copyChatMessage(message); return true; }); bubble.addView(name);
             TextView meta = text(glyphLabel(glyph) + "  ·  " + android.text.format.Formatter.formatShortFileSize(this, fileSize), 12, Color.rgb(163, 167, 164)); bubble.addView(meta);
             boolean done = message.optBoolean("done", false);
             boolean failed = message.optBoolean("failed", false);
@@ -418,7 +877,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             }
         } else {
             TextView content = text(message.optString("text", ""), 15, Color.WHITE);
-            content.setMaxWidth(maxWidth);
+            content.setMaxWidth(maxWidth); content.setSingleLine(false); content.setMaxLines(Integer.MAX_VALUE); content.setEllipsize(null); content.setHorizontallyScrolling(false); if (Build.VERSION.SDK_INT >= 23) content.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_SIMPLE);
             content.setLineSpacing(dp(2), 1f); content.setOnLongClickListener(v -> { copyChatMessage(message); return true; }); bubble.addView(content);
         }
         bubble.setOnLongClickListener(v -> { copyChatMessage(message); return true; });
@@ -427,9 +886,15 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         body.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
         TextView metaLine = text(chatTimestamp(message.optLong("ts", 0)) + (out ? "  " + tr(statusLabel(message.optString("status", "sent")) + "") : ""), 11, Color.rgb(127, 132, 128));
         metaLine.setPadding(dp(2), dp(3), dp(2), 0); body.addView(metaLine, new LinearLayout.LayoutParams(-2, -2));
+        String avatarData = out ? getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).getString("avatar_data", "") : getPreferences(MODE_PRIVATE).getString("remote_avatar_data", "");
+        if (!out && message.optBoolean("isGroup", false) && !activeGroupId.isEmpty()) {
+            org.json.JSONObject group = groupStore.get(activeGroupId); org.json.JSONArray members = group == null ? null : group.optJSONArray("members");
+            if (members != null) for (int i = 0; i < members.length(); i++) { org.json.JSONObject member = members.optJSONObject(i); if (member != null && message.optString("senderId").equals(member.optString("deviceId"))) { avatarData = member.optString("avatarData", ""); break; } }
+        }
         DeviceAvatar avatar = new DeviceAvatar(out);
+        avatar.setAvatar(avatarData);
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(28), dp(28));
-        LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(-2, -2);
+        LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(bodyWidth, -2);
         if (out) { bodyParams.rightMargin = dp(7); row.addView(body, bodyParams); row.addView(avatar, avatarParams); }
         else { avatarParams.rightMargin = dp(7); row.addView(avatar, avatarParams); row.addView(body, bodyParams); }
         return row;
@@ -451,9 +916,22 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         private final boolean mobile;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         DeviceAvatar(boolean mobile) { super(MainActivity.this); this.mobile = mobile; setContentDescription(mobile ? (english ? "Phone" : "手机") : (english ? "Computer" : "电脑")); }
+        private android.graphics.Bitmap custom;
+        void setAvatar(String data) {
+            custom = null;
+            try {
+                if (data != null && data.length() <= 24000 && data.startsWith("data:image/jpeg;base64,")) { byte[] bytes = android.util.Base64.decode(data.substring(data.indexOf(',') + 1), android.util.Base64.DEFAULT); custom = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length); }
+            } catch (Exception ignored) { custom = null; }
+            invalidate();
+        }
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float s = Math.min(getWidth(), getHeight()), cx = getWidth() / 2f, cy = getHeight() / 2f;
+            if (custom != null) {
+                int save = canvas.save(); android.graphics.Path path = new android.graphics.Path(); path.addCircle(cx, cy, s * .49f, android.graphics.Path.Direction.CW); canvas.clipPath(path);
+                float scale = Math.max(s / custom.getWidth(), s / custom.getHeight()); float width = custom.getWidth() * scale, height = custom.getHeight() * scale;
+                canvas.drawBitmap(custom, null, new RectF(cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2), paint); canvas.restoreToCount(save); return;
+            }
             paint.setStyle(Paint.Style.FILL); paint.setColor(mobile ? Color.rgb(18, 55, 38) : Color.rgb(32, 42, 36)); canvas.drawCircle(cx, cy, s * .49f, paint);
             paint.setStyle(Paint.Style.STROKE); paint.setStrokeCap(Paint.Cap.ROUND); paint.setStrokeJoin(Paint.Join.ROUND); paint.setStrokeWidth(Math.max(dp(1.4f), s * .055f));
             paint.setColor(mobile ? Color.rgb(0, 225, 132) : Color.rgb(155, 181, 164));
@@ -480,20 +958,51 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         return new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(new java.util.Date(ts));
     }
 
+    private String chatInboxTimestamp(long ts) {
+        if (ts <= 0) return "";
+        java.util.Calendar message = java.util.Calendar.getInstance(); message.setTimeInMillis(ts);
+        java.util.Calendar today = java.util.Calendar.getInstance();
+        String format = message.get(java.util.Calendar.YEAR) == today.get(java.util.Calendar.YEAR)
+                && message.get(java.util.Calendar.DAY_OF_YEAR) == today.get(java.util.Calendar.DAY_OF_YEAR) ? "HH:mm" : "MM-dd";
+        return new java.text.SimpleDateFormat(format, java.util.Locale.getDefault()).format(new java.util.Date(ts));
+    }
+
     private void sendChatText() {
         if (chatInput == null) return;
         String content = chatInput.getText().toString();
         if (content.trim().isEmpty()) return;
-        if (client == null || !client.isConnected()) { toast("请先连接电脑，再发送消息"); return; }
+        if (!activeGroupId.isEmpty()) {
+            org.json.JSONObject group=groupStore.get(activeGroupId); if(group==null)return;
+            if(deviceId.equals(group.optString("ownerId"))) GroupHostService.sendLocal(this,activeGroupId,content.trim());
+            else { GroupClient groupClient=groupClients.get(activeGroupId); if(groupClient==null||!groupClient.sendText(content.trim())){toast(english?"Group host is offline · message not sent":"群主当前不在线，消息未发送");return;} }
+            chatInput.setText(""); return;
+        }
+        String peer = selectedDirectPeer.isEmpty() ? chatPeerKey() : selectedDirectPeer;
+        if (!peer.equals(chatPeerKey()) || client == null || !client.isConnected()) { toast(english ? "Connect to this computer before sending" : "请先连接这台电脑，再发送消息"); return; }
         String msgId = client.sendChatText(content);
         if (msgId == null) return;
         chatInput.setText("");
-        chatStore.append(chatPeerKey(), chatRecord(msgId, "out", "text", content.trim(), System.currentTimeMillis(), ChatStore.STATUS_SENT, "", 0, ""));
+        chatStore.append(peer, chatRecord(msgId, "out", "text", content.trim(), System.currentTimeMillis(), ChatStore.STATUS_SENT, "", 0, ""));
         renderChat();
     }
 
     private void pickChatFile() {
-        if (client == null || !client.isConnected()) { toast("请先连接电脑，再发送文件"); return; }
+        if (!activeGroupId.isEmpty()) {
+            org.json.JSONObject group = groupStore.get(activeGroupId);
+            if (group == null) return;
+            boolean owner = deviceId.equals(group.optString("ownerId"));
+            GroupClient groupClient = groupClients.get(activeGroupId);
+            if (!owner && (groupClient == null || !groupClient.isOnline())) { toast(english ? "The group host is offline" : "群主当前不在线，无法发送文件"); return; }
+            chatFilePeer = "group:" + activeGroupId;
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+            try { startActivityForResult(intent, PICK_CHAT_FILE); } catch (Exception e) { toast("无法打开文件选择器"); }
+            return;
+        }
+        String peer = selectedDirectPeer.isEmpty() ? chatPeerKey() : selectedDirectPeer;
+        if (!peer.equals(chatPeerKey()) || client == null || !client.isConnected()) { toast(english ? "Connect to this computer before sending a file" : "请先连接这台电脑，再发送文件"); return; }
+        chatFilePeer = peer;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
@@ -501,6 +1010,9 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     }
 
     private void sendChatFile(Uri uri) {
+        String peer = chatFilePeer; chatFilePeer = "";
+        if (peer.startsWith("group:")) { sendGroupFile(uri, peer.substring("group:".length())); return; }
+        if (!peer.equals(chatPeerKey())) { toast(english ? "The connected computer changed. Select the file again." : "连接的电脑已变化，请重新选择文件"); return; }
         if (client == null || !client.isConnected() || uri == null) return;
         String transferId = "t_a_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         String msgId = client.sendChatFile(getContentResolver(), uri, transferId);
@@ -512,9 +1024,71 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         } catch (Exception ignored) { }
         org.json.JSONObject record = chatRecord(msgId, "out", "file", "", System.currentTimeMillis(), ChatStore.STATUS_SENT, name, size, transferId);
         try { record.put("localUri", uri.toString()).put("mime", getContentResolver().getType(uri)); } catch (Exception ignored) { }
-        chatStore.append(chatPeerKey(), record);
+        chatStore.append(peer, record);
         renderChat();
         toast("文件已作为消息发送");
+    }
+
+    private void sendGroupFile(Uri uri, String groupId) {
+        if (uri == null || groupId == null || groupId.isEmpty()) return;
+        org.json.JSONObject group = groupStore.get(groupId); if (group == null) return;
+        String name = displayNameForChat(uri), mime = getContentResolver().getType(uri);
+        if (mime == null || mime.isEmpty()) mime = "application/octet-stream";
+        long size = 0;
+        try (android.database.Cursor cursor = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) size = Math.max(0, cursor.getLong(0));
+        } catch (Exception ignored) { }
+        if (size > 100L * 1024L * 1024L) { toast(english ? "Group files are limited to 100 MB" : "群聊文件暂时限制为 100 MB"); return; }
+        final long groupFileSize = size;
+        final String groupFileName = name, groupFileMime = mime;
+        final String transferId = "g_a_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        final String fileId = "gf_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        boolean owner = deviceId.equals(group.optString("ownerId"));
+        if (owner) {
+            groupFileExecutor.execute(() -> {
+                try (InputStream input = getContentResolver().openInputStream(uri)) {
+                    if (input == null) throw new IllegalStateException();
+                    org.json.JSONObject base = new org.json.JSONObject().put("groupId", groupId).put("transferId", transferId).put("fileId", fileId).put("senderId", deviceId).put("senderName", deviceName());
+                    GroupHostService.sendFileMessage(this, new org.json.JSONObject(base.toString()).put("type", "file_start").put("name", groupFileName).put("size", groupFileSize).put("mime", groupFileMime));
+                    byte[] buffer = new byte[6144]; int read, seq = 0;
+                    while ((read = input.read(buffer)) > 0) GroupHostService.sendFileMessage(this, new org.json.JSONObject(base.toString()).put("type", "file_chunk").put("seq", seq++).put("data", Base64.encodeToString(java.util.Arrays.copyOf(buffer, read), Base64.NO_WRAP)));
+                    GroupHostService.sendFileMessage(this, new org.json.JSONObject(base.toString()).put("type", "file_end"));
+                } catch (Exception ignored) { runOnUiThread(() -> toast(english ? "Group file failed" : "群聊文件发送失败")); }
+            });
+        } else {
+            GroupClient groupClient = groupClients.get(groupId);
+            if (groupClient == null || !groupClient.isOnline()) { toast(english ? "The group host is offline" : "群主当前不在线，无法发送文件"); return; }
+            groupClient.sendFile(getContentResolver(), uri, transferId, fileId, name, size, mime);
+        }
+        org.json.JSONObject record = chatRecord("group-file-" + transferId, "out", "file", "", System.currentTimeMillis(), ChatStore.STATUS_SENT, name, size, transferId);
+        try { record.put("isGroup", true).put("senderId", deviceId).put("senderName", deviceName()).put("done", true).put("progress", 100).put("localUri", uri.toString()).put("mime", mime); } catch (Exception ignored) { }
+        groupStore.append(groupId, record, false); renderChat(); toast(english ? "File sent to group" : "文件已发送到群聊");
+    }
+
+    /** 接收群聊文件的三段式协议，并把文件记录落到群聊历史中。 */
+    private void handleGroupFileEvent(String groupId, org.json.JSONObject event) {
+        if (groupId == null || groupId.isEmpty() || event == null || deviceId.equals(event.optString("senderId"))) return;
+        String transferId = event.optString("transferId"), fileId = event.optString("fileId"), key = groupId + ":" + transferId;
+        if (transferId.isEmpty()) return;
+        try {
+            if ("file_start".equals(event.optString("type"))) {
+                File downloadRoot = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS); if (downloadRoot == null) downloadRoot = getFilesDir();
+                File root = new File(downloadRoot, "Nearby Transfer"); root.mkdirs();
+                String safe = event.optString("name", "文件").replaceAll("[\\\\/:*?\"<>|]", "_"); if (safe.isEmpty()) safe = "文件";
+                File file = new File(root, safe); int n = 1; int dot = safe.lastIndexOf('.'); String stem = dot > 0 ? safe.substring(0, dot) : safe, ext = dot > 0 ? safe.substring(dot) : "";
+                while (file.exists()) file = new File(root, stem + " (" + n++ + ")" + ext);
+                groupFileOutputs.put(key, new FileOutputStream(file)); groupFilePaths.put(key, file); groupFileMeta.put(key, new org.json.JSONObject(event.toString()));
+            } else if ("file_chunk".equals(event.optString("type"))) {
+                FileOutputStream output = groupFileOutputs.get(key); if (output != null) output.write(Base64.decode(event.optString("data", ""), Base64.DEFAULT));
+            } else if ("file_end".equals(event.optString("type"))) {
+                FileOutputStream output = groupFileOutputs.remove(key); if (output != null) output.close();
+                File file = groupFilePaths.remove(key); org.json.JSONObject meta = groupFileMeta.remove(key); if (file == null || meta == null) return;
+                Uri local = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+                org.json.JSONObject record = chatRecord("group-file-" + transferId, "in", "file", "", System.currentTimeMillis(), ChatStore.STATUS_READ, meta.optString("name", "文件"), meta.optLong("size", file.length()), transferId);
+                record.put("isGroup", true).put("senderId", meta.optString("senderId")).put("senderName", meta.optString("senderName", "设备")).put("done", true).put("progress", 100).put("localUri", local.toString()).put("mime", meta.optString("mime", "application/octet-stream"));
+                groupStore.append(groupId, record, true); if (activePageIndex == 2) renderChat();
+            }
+        } catch (Exception ignored) { }
     }
 
     private String displayNameForChat(Uri uri) {
@@ -562,7 +1136,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
                 String serverId = device.optString("deviceId", ""); SharedPreferences pairingPrefs = getPreferences(MODE_PRIVATE);
                 String savedToken = pairingPrefs.getString("paired_host:" + ip, pairingPrefs.getString("paired_device:" + serverId, ""));
                 Button row = button(name + "  ·  " + ip + (!savedToken.isEmpty() ? "  ·  " + (english ? "Trusted" : "已配对") : ""));
-                row.setTextColor(Color.WHITE); row.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); row.setOnClickListener(v -> { ipInput.setText(ip); String token = pairingPrefs.getString("paired_host:" + ip, pairingPrefs.getString("paired_device:" + serverId, "")); if (!token.isEmpty()) { pairingPrefs.edit().putString("paired_host:" + ip, token).putString("paired_host_device:" + ip, serverId).putString("paired_host_name:" + ip, name).apply(); renderPairedDevices(); connectButton.setEnabled(false); status.setText(tr("正在连接…")); client = createClient(); client.connectPaired(ip, NativeClient.PORT, token); } else { codeInput.requestFocus(); toast(english ? "Enter the pairing code shown on the computer" : "请输入电脑端显示的匹配码"); } });
+                row.setTextColor(Color.WHITE); row.setBackground(box(Color.rgb(25,30,27), Color.rgb(42,47,45), dp(12))); row.setOnClickListener(v -> { ipInput.setText(ip); String token = pairingPrefs.getString("paired_host:" + ip, pairingPrefs.getString("paired_device:" + serverId, "")); if (!token.isEmpty()) { pairingPrefs.edit().putString("paired_host:" + ip, token).putString("paired_host_device:" + ip, serverId).putString("paired_host_name:" + ip, name).putString("last_host", ip).apply(); renderPairedDevices(); connectButton.setEnabled(false); status.setText(tr("正在连接…")); client = createClient(); client.connectPaired(ip, NativeClient.PORT, token); } else { codeInput.requestFocus(); toast(english ? "Enter the pairing code shown on the computer" : "请输入电脑端显示的匹配码"); } });
                 discoveredDevices.addView(row, params(-1, 50));
             }
         });
@@ -594,14 +1168,46 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         try { startActivityForResult(intent, PICK_FILES); } catch (Exception e) { toast("无法打开文件选择器，请检查系统文件应用"); }
     }
 
+    private void pickAvatar() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.setType("image/*"); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { startActivityForResult(intent, PICK_AVATAR); } catch (Exception e) { toast(english ? "Unable to open image picker" : "无法打开图片选择器"); }
+    }
+
+    private void saveAvatar(Uri uri) {
+        try (java.io.InputStream input = getContentResolver().openInputStream(uri)) {
+            android.graphics.Bitmap source = android.graphics.BitmapFactory.decodeStream(input);
+            if (source == null) throw new IllegalArgumentException("图片格式不支持");
+            int side = Math.min(source.getWidth(), source.getHeight());
+            android.graphics.Bitmap square = android.graphics.Bitmap.createBitmap(source, (source.getWidth() - side) / 2, (source.getHeight() - side) / 2, side, side);
+            android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(square, 96, 96, true);
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream(); scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 78, bytes);
+            String encoded = "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP);
+            getSharedPreferences("nearby_transfer_identity", MODE_PRIVATE).edit().putString("avatar_data", encoded).apply();
+            discovery.announceNow();
+            if (client != null && client.isConnected()) client.updateProfile();
+            toast(english ? "Device avatar updated" : "设备头像已更新");
+        } catch (Exception e) { toast(english ? "Unable to read this image" : "无法读取这张图片"); }
+    }
+
+    private void editChatAlias() {
+        String peer = chatAliasKey();
+        EditText value = input(chatStore.alias(peer));
+        new androidx.appcompat.app.AlertDialog.Builder(this).setTitle(english ? "Device nickname" : "设备备注名称")
+            .setMessage(english ? "Only visible on this phone. Leave empty to restore the device name." : "仅在本机显示，留空则恢复对端设备原名。")
+            .setView(value).setNegativeButton(english ? "Cancel" : "取消", null)
+            .setPositiveButton(english ? "Save" : "保存", (dialog, which) -> { chatStore.setAlias(peer, value.getText().toString()); updateChatHeader(); })
+            .show();
+    }
+
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_AVATAR) { if (result == RESULT_OK && data != null && data.getData() != null) saveAvatar(data.getData()); return; }
         if (request == PICK_CHAT_FILE) {
             if (result == RESULT_OK && data != null && data.getData() != null) {
                 Uri uri = data.getData();
                 try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) { }
                 sendChatFile(uri);
-            }
+            } else chatFilePeer = "";
             return;
         }
         if (request != PICK_FILES || result != RESULT_OK || data == null) return;
@@ -795,7 +1401,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
     private void hideIncomingOverlay() { if (incomingOverlay != null) incomingOverlay.setVisibility(View.GONE); }
 
     private Button navButton(String label) {
-        Button b = button(label); b.setTextColor(Color.rgb(163, 167, 164)); b.setBackgroundColor(Color.TRANSPARENT); return b;
+        Button b = button(label); b.setTextColor(COLOR_TEXT_SECONDARY); b.setTextSize(12); b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); b.setMinWidth(0); b.setMinHeight(0); b.setGravity(Gravity.CENTER); b.setPadding(0, 0, 0, 0); b.setBackgroundColor(Color.TRANSPARENT); return b;
     }
 
     private LinearLayout linkTile(String glyph, String label, String subtitle, View.OnClickListener listener) {
@@ -921,8 +1527,9 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         }
     }
 
-    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText((english ? "Connected · " : "已连接 · ") + name); connectButton.setEnabled(true); connectButton.setText(tr("已连接")); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); }); }
-    @Override public void onConnectionDetails(String name, String serverId, String token, String host) { SharedPreferences prefs = getPreferences(MODE_PRIVATE); SharedPreferences.Editor editor = prefs.edit(); if (host != null && !host.isEmpty()) { if (token != null && !token.isEmpty()) editor.putString("paired_host:" + host, token); if (serverId != null && !serverId.isEmpty()) { editor.putString("paired_host_device:" + host, serverId); if (token != null && !token.isEmpty()) editor.putString("paired_device:" + serverId, token); } editor.putString("paired_host_name:" + host, name); } editor.putString("last_connect_name", name); editor.apply(); runOnUiThread(this::renderPairedDevices); }
+    @Override public void onConnected(String name) { runOnUiThread(() -> { status.setText((english ? "Connected · " : "已连接 · ") + name); connectButton.setEnabled(true); connectButton.setText(tr("已连接")); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); if (activePageIndex == 2) renderChat(); }); }
+    @Override public void onRemoteAvatar(String avatarData) { String safe = avatarData != null && avatarData.length() <= 24000 && avatarData.startsWith("data:image/jpeg;base64,") ? avatarData : ""; getPreferences(MODE_PRIVATE).edit().putString("remote_avatar_data", safe).apply(); runOnUiThread(this::updateChatHeader); }
+    @Override public void onConnectionDetails(String name, String serverId, String token, String host) { SharedPreferences prefs = getPreferences(MODE_PRIVATE); SharedPreferences.Editor editor = prefs.edit(); if (host != null && !host.isEmpty()) { if (token != null && !token.isEmpty()) editor.putString("paired_host:" + host, token); if (serverId != null && !serverId.isEmpty()) { editor.putString("paired_host_device:" + host, serverId); if (token != null && !token.isEmpty()) editor.putString("paired_device:" + serverId, token); } editor.putString("paired_host_name:" + host, name).putString("last_host", host); } editor.putString("last_connect_name", name); editor.apply(); runOnUiThread(() -> { renderPairedDevices(); if (activePageIndex == 2) renderChat(); }); }
     @Override public void onError(String message) { runOnUiThread(() -> { if (message != null && (message.contains("匹配凭证已失效") || message.contains("Pairing token expired"))) { String ip = ipInput.getText().toString().trim(); SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit().remove("paired_host:" + ip); String serverId = getPreferences(MODE_PRIVATE).getString("paired_host_device:" + ip, ""); if (!serverId.isEmpty()) editor.remove("paired_device:" + serverId).remove("paired_host_device:" + ip); editor.apply(); codeInput.requestFocus(); } status.setText(tr("连接失败")); connectButton.setEnabled(true); updateSendButtonState(); updateChatHeader(); toast(message); }); }
     @Override public void onRejected(String reason) { runOnUiThread(() -> { status.setText(english ? "Transfer rejected by the computer" : "电脑已拒绝接收"); toast(english ? "The recipient declined this transfer" : "对方拒绝了本次文件传输"); }); }
     @Override public void onSendWaiting(List<Uri> files) { runOnUiThread(() -> { sendInProgress = true; status.setText(english ? "Waiting for recipient approval" : "等待电脑确认接收"); updateSendButtonState(); }); }
@@ -934,7 +1541,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         if (!incoming) runOnUiThread(() -> { sendInProgress = false; updateSendButtonState(); });
         else runOnUiThread(this::renderChat);
         recordTransfer(incoming, label, success);
-    }    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); }); }
+    }
+    @Override public void onClosed() { runOnUiThread(() -> { status.setText(tr("连接已断开")); connectButton.setEnabled(true); pickButton.setText(tr("选择文件")); updateSendButtonState(); updateChatHeader(); if (activePageIndex == 2) renderChat(); }); }
     @Override public void onIncomingOffer(String label, String deviceName, String ip) { runOnUiThread(() -> { playAlertTone(ToneGenerator.TONE_PROP_PROMPT); status.setText(english ? "Waiting for confirmation" : "等待接收确认"); receiveText.setText(english ? "From: " + deviceName + " · " + ip + "\nFiles: " + label : "来源：" + deviceName + " · " + ip + "\n文件：" + label); showIncomingOverlay(label, deviceName, ip); toast(english ? "Incoming files · review and accept or decline" : "收到文件，请确认接收或拒绝"); showIncomingNotification(label, deviceName, ip); }); }
 
     private void playAlertTone(int tone) {
@@ -958,8 +1566,8 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
         if (granted) { toast(english ? "Notifications are enabled" : "通知已开启"); return; }
         android.app.Dialog dialog = new android.app.Dialog(this); dialog.getWindow();
         LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(22), dp(20), dp(22), dp(18)); panel.setBackground(box(Color.rgb(20, 27, 23), Color.rgb(0, 196, 117), dp(22)));
-        TextView icon = text("🔔", 25, Color.rgb(0, 232, 135)); icon.setGravity(Gravity.CENTER); panel.addView(icon, params(-1, dp(42)));
-        TextView title = text(english ? "Stay on top of incoming files" : "及时看到收到的文件", 19, Color.WHITE); title.setGravity(Gravity.CENTER); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(title, params(-1, dp(34)));
+        TextView icon = text("🔔", 25, Color.rgb(0, 232, 135)); icon.setGravity(Gravity.CENTER); panel.addView(icon, params(-1, 42));
+        TextView title = text(english ? "Stay on top of incoming files" : "及时看到收到的文件", 19, Color.WHITE); title.setGravity(Gravity.CENTER); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(title, params(-1, 34));
         TextView copy = text(english ? "Allow notifications to see file requests and transfer updates when Nearby Transfer is in the background." : "允许通知后，邻传在后台时也能提醒你确认文件，并告知传输状态。你仍可在应用内查看和处理文件。", 14, Color.rgb(177, 187, 180)); copy.setGravity(Gravity.CENTER); copy.setLineSpacing(dp(3), 1f); LinearLayout.LayoutParams copyParams = params(-1, -2); copyParams.topMargin = dp(6); copyParams.bottomMargin = dp(18); panel.addView(copy, copyParams);
         LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER_VERTICAL); actions.setOrientation(LinearLayout.HORIZONTAL);
         Button later = button(english ? "Not now" : "稍后再说"); later.setTextSize(13); actions.addView(later, new LinearLayout.LayoutParams(0, dp(44), 1));
@@ -1010,7 +1618,7 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
             chatStore.append(peer, record);
             playAlertTone(ToneGenerator.TONE_PROP_BEEP2);
             // 收到对端消息时直接进入聊天页，保持桌面端与手机端行为一致。
-            showPage(2);
+            openChatConversation("");
             toast(english ? "New chat message from the computer" : "收到电脑端的新消息");
         });
     }
@@ -1041,13 +1649,14 @@ public class MainActivity extends AppCompatActivity implements NativeClient.List
 
     @Override protected void onDestroy() { if (client != null) client.close(); if (discovery != null) discovery.stop(); thumbnailExecutor.shutdownNow(); super.onDestroy(); }
 
-    private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(tr(value)); v.setTextSize(size); v.setTextColor(color); v.setBackgroundColor(Color.TRANSPARENT); return v; }
-    private EditText input(String hint) { EditText v = new EditText(this); v.setHint(tr(hint)); v.setHintTextColor(Color.rgb(127,132,128)); v.setTextColor(Color.WHITE); v.setTextSize(15); v.setSingleLine(true); v.setPadding(dp(16), 0, dp(16), 0); v.setBackground(box(Color.rgb(31,36,33), Color.rgb(42,47,45), dp(12))); return v; }
-    private Button button(String label) { Button b = new Button(this); b.setText(tr(label)); b.setTextSize(15); b.setTextColor(Color.rgb(7,26,18)); b.setAllCaps(false); b.setPadding(dp(12), 0, dp(12), 0); b.setBackground(box(Color.rgb(7,193,96), Color.rgb(7,193,96), dp(12))); return b; }
+    private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(tr(value)); v.setTextSize(size); v.setTextColor(color); v.setIncludeFontPadding(false); v.setBackgroundColor(Color.TRANSPARENT); return v; }
+    private EditText input(String hint) { EditText v = new EditText(this); v.setHint(tr(hint)); v.setHintTextColor(COLOR_TEXT_MUTED); v.setTextColor(COLOR_TEXT); v.setTextSize(15); v.setSingleLine(true); v.setIncludeFontPadding(false); v.setPadding(dp(15), 0, dp(15), 0); v.setBackground(box(COLOR_SURFACE_RAISED, COLOR_BORDER, dp(11))); return v; }
+    private Button button(String label) { Button b = new Button(this); b.setText(tr(label)); b.setTextSize(14); b.setTextColor(Color.rgb(7,26,18)); b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); b.setAllCaps(false); b.setMinWidth(0); b.setMinHeight(0); b.setPadding(dp(12), 0, dp(12), 0); b.setBackground(box(Color.rgb(7,193,96), Color.rgb(7,193,96), dp(11))); return b; }
     private GradientDrawable box(int fill, int stroke, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(fill); d.setCornerRadius(radius); d.setStroke(dp(1), stroke); return d; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private LinearLayout.LayoutParams params(int width, int height) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(width, dp(height)); p.setMargins(0, dp(6), 0, dp(6)); return p; }
+    private int layoutDimension(int value) { return value == LinearLayout.LayoutParams.MATCH_PARENT || value == LinearLayout.LayoutParams.WRAP_CONTENT ? value : dp(value); }
+    private LinearLayout.LayoutParams params(int width, int height) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(layoutDimension(width), layoutDimension(height)); p.setMargins(0, dp(4), 0, dp(4)); return p; }
     private String localizeError(String message) {
         if (!english || message == null) return tr(message);
         if (message.startsWith("无法读取文件：")) return "Cannot read file: " + message.substring("无法读取文件：".length());

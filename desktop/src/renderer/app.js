@@ -1023,11 +1023,14 @@ $('btnRejectOffer').addEventListener('click', async () => {
 
 const CHAT = {
   chats: [],            // 会话摘要
+  groups: [],           // 局域网群聊
   activeId: '',         // 当前打开的 peerId
+  activeGroupId: '',
   peerType: 'desktop',  // 对端设备类型，用于头像与会话识别
   messages: new Map(),  // peerId -> message[]
   sending: false,
 };
+let pendingGroupConfirm = null;
 
 /** 消息上的时间显示：今天只显示时分，否则显示月-日 时:分 */
 function chatTime(ts) {
@@ -1045,21 +1048,56 @@ function chatDayLabel(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// Compatibility for direct messages saved by older Android builds. Group
+// messages intentionally keep senderName as a separate visual label.
+function stripLegacyDirectSenderPrefix(value, peerName) {
+  const text = String(value || '');
+  const name = String(peerName || '').trim();
+  if (!name || !text.startsWith(name)) return text;
+  const rest = text.slice(name.length);
+  return /^\s*[:：|>-]\s*/.test(rest) ? rest.replace(/^\s*[:：|>-]\s*/, '') : text;
+}
+
+function directMessageText(message, peerName) {
+  if (CHAT.activeGroupId || message?.dir !== 'in') return String(message?.text || '');
+  return stripLegacyDirectSenderPrefix(message?.text, peerName);
+}
+
 /** 会话摘要副标题 */
 function chatSubtitle(c) {
   const lm = c.lastMessage;
   if (!lm) return '暂无消息';
   const prefix = lm.dir === 'out' ? '我：' : '';
   if (lm.kind === 'file') return `${prefix}[文件] ${lm.fileName || ''}`.trim();
-  return prefix + (lm.text || '');
+  return prefix + stripLegacyDirectSenderPrefix(lm.text, c.peer?.name);
+}
+
+function groupSubtitle(group) {
+  const lm = group && group.lastMessage;
+  if (!lm) return '暂无消息';
+  const prefix = lm.senderName ? `${lm.senderName}: ` : '';
+  const body = lm.kind === 'file' ? `[文件] ${lm.fileName || ''}` : (lm.text || '');
+  return `${prefix}${body}`.trim();
 }
 
 function chatPeerIsMobile(peer) {
   return !!(peer && peer.type === 'mobile') || /^mobile[-_]/i.test((peer && peer.deviceId) || '');
 }
 
+function safeAvatarData(peer) {
+  const value = peer && peer.avatarData;
+  return typeof value === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]{1,22000}$/.test(value) ? value : '';
+}
+
+function avatarMarkup(data, type, size = 18) {
+  const safe = safeAvatarData({ avatarData: data });
+  if (safe) return `<img class="avatar-image" alt="" src="${safe}" width="${size}" height="${size}">`;
+  return window.Icons.icon(type === 'mobile' ? 'mobile' : 'desktop', { size, sw: 1.7 });
+}
+
 async function loadChats() {
   CHAT.chats = (await api.getChats()) || [];
+  CHAT.groups = (await api.getGroups()) || [];
   renderChatList();
   renderChatBadge();
 }
@@ -1067,7 +1105,7 @@ async function loadChats() {
 function renderChatBadge() {
   const badge = $('chatBadge');
   if (!badge) return;
-  const unread = CHAT.chats.reduce((a, c) => a + (c.unread || 0), 0);
+  const unread = CHAT.chats.reduce((a, c) => a + (c.unread || 0), 0) + CHAT.groups.reduce((a, g) => a + (g.unread || 0), 0);
   badge.hidden = unread <= 0;
   badge.textContent = unread > 99 ? '99+' : String(unread);
 }
@@ -1076,18 +1114,27 @@ function renderChatList() {
   const list = $('chatList');
   if (!list) return;
   const items = CHAT.chats || [];
-  $('chatListEmpty').hidden = items.length > 0;
+  $('chatListEmpty').hidden = items.length > 0 || CHAT.groups.length > 0;
   list.innerHTML = items.map((c) => `
-    <li class="chat-item${c.peerId === CHAT.activeId ? ' active' : ''}" data-peer="${esc(c.peerId)}">
-      <div class="chat-item-ic">${window.Icons.icon(chatPeerIsMobile(c.peer) ? 'mobile' : 'desktop', { size: 17, sw: 1.7 })}</div>
+    <li class="chat-item${c.peerId === CHAT.activeId ? ' active' : ''}" data-peer="${esc(c.peerId)}" role="button" tabindex="0" aria-label="打开与 ${esc(c.alias || (c.peer && c.peer.name) || c.peerId)} 的聊天">
+      <div class="chat-item-ic">${avatarMarkup(c.peer?.avatarData, chatPeerIsMobile(c.peer) ? 'mobile' : 'desktop', 17)}</div>
       <div class="chat-item-main">
-        <div class="chat-item-name">${esc((c.peer && c.peer.name) || c.peerId)}</div>
+        <div class="chat-item-line"><div class="chat-item-name">${esc(c.alias || (c.peer && c.peer.name) || c.peerId)}</div><time class="chat-item-time">${esc(chatTime(c.lastMessage?.ts))}</time></div>
         <div class="chat-item-sub">${esc(chatSubtitle(c))}</div>
       </div>
       ${c.unread ? `<span class="chat-item-unread">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
+  </li>`).join('') + CHAT.groups.map((g) => `
+    <li class="chat-item group-chat-item${`group:${g.id}` === CHAT.activeId ? ' active' : ''}" data-group="${esc(g.id)}" role="button" tabindex="0" aria-label="打开群聊 ${esc(g.name || '群聊')}">
+      <div class="chat-item-ic">${window.Icons.icon('chat', { size: 17, sw: 1.7 })}</div>
+      <div class="chat-item-main"><div class="chat-item-line"><div class="chat-item-name">${esc(g.name || '群聊')}</div><time class="chat-item-time">${esc(chatTime(g.lastMessage?.ts))}</time></div><div class="chat-item-sub">${esc(groupSubtitle(g))}</div></div>
+      ${g.unread ? `<span class="chat-item-unread">${g.unread > 99 ? '99+' : g.unread}</span>` : ''}<span class="chat-item-state${g.online ? ' online' : ''}" title="${g.online ? '已连接' : '离线，等待重连'}" aria-label="${g.online ? '已连接' : '离线，等待重连'}"></span>
     </li>`).join('');
   list.querySelectorAll('[data-peer]').forEach((li) =>
     li.addEventListener('click', () => openChat(li.dataset.peer)));
+  list.querySelectorAll('[data-group]').forEach((li) => li.addEventListener('click', () => openGroup(li.dataset.group)));
+  list.querySelectorAll('[role="button"]').forEach((li) => li.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); li.click(); }
+  }));
   renderChatOnline();
 }
 
@@ -1111,6 +1158,7 @@ function renderChatOnline() {
 
 async function openChat(peerId) {
   if (!peerId) return;
+  CHAT.activeGroupId = '';
   CHAT.activeId = peerId;
   const r = await api.getChatMessages(peerId, { limit: 300 });
   CHAT.messages.set(peerId, (r && r.messages) || []);
@@ -1121,10 +1169,13 @@ async function openChat(peerId) {
   $('chatHead').hidden = false;
   $('chatEmpty').hidden = true;
   $('chatComposer').hidden = false;
-  $('chatPeerName').textContent = peer.name || peerId;
-  $('chatPeerMeta').textContent = `${isMobile ? '手机' : '电脑'} · ${S.sessions.some((s) => s.device && s.device.deviceId === peerId) ? '已连接' : '未连接'}`;
+  $('chatPeerName').textContent = (chat && chat.alias) || peer.alias || peer.name || peerId;
+  $('btnChatAlias').hidden = false; $('btnGroupManage').hidden = true; $('btnChatAttach').disabled = false; $('btnChatClear').hidden = false;
+  const peerOnline = S.sessions.some((s) => s.device && s.device.deviceId === peerId);
+  $('chatPeerMeta').textContent = `${isMobile ? '手机' : '电脑'} · ${peerOnline ? '已连接' : '未连接'}`;
+  $('chatPeerMeta').classList.toggle('is-offline', !peerOnline);
   const ic = $('chatHead').querySelector('.chat-peer-ic');
-  if (ic) ic.innerHTML = window.Icons.icon(isMobile ? 'mobile' : 'desktop', { size: 18, sw: 1.7 });
+  if (ic) ic.innerHTML = avatarMarkup(peer.avatarData, isMobile ? 'mobile' : 'desktop', 18);
   renderTimeline();
   renderChatList();
   // 本地已读 + 回执给对端
@@ -1133,6 +1184,92 @@ async function openChat(peerId) {
   if (c) { c.unread = 0; renderChatList(); renderChatBadge(); }
   scrollChatToEnd();
   $('chatInput').focus();
+}
+
+async function openGroup(groupId, { preserveView = false } = {}) {
+  const groups = await api.getGroups();
+  CHAT.groups = groups || [];
+  const group = CHAT.groups.find((g) => g.id === groupId);
+  if (!group) return;
+  const timeline = $('chatTimeline');
+  const wasAtBottom = !preserveView || timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 80;
+  const previousTop = timeline.scrollTop;
+  CHAT.activeGroupId = groupId; CHAT.activeId = `group:${groupId}`; CHAT.peerType = 'group';
+  CHAT.messages.set(CHAT.activeId, (group.messages || []).map((m) => ({ ...m, dir: m.senderId === S.self?.deviceId ? 'out' : 'in', kind: m.kind || 'text', status: m.status || 'sent' })));
+  $('chatHead').hidden = false; $('chatEmpty').hidden = true; $('chatComposer').hidden = false;
+  $('chatPeerName').textContent = group.name || '群聊';
+  $('chatPeerMeta').textContent = `${(group.members || []).length} 位成员 · ${group.online ? (group.ownerId === S.self?.deviceId ? '本机主持' : '已连接') : '离线 · 等待重连'}`;
+  $('chatPeerMeta').classList.toggle('is-offline', !group.online);
+  $('btnChatAlias').hidden = true; $('btnGroupManage').hidden = false; $('btnChatAttach').disabled = false; $('btnChatClear').hidden = true;
+  const ic = $('chatHead').querySelector('.chat-peer-ic'); if (ic) ic.innerHTML = window.Icons.icon('chat', { size: 18, sw: 1.7 });
+  renderTimeline(); renderChatList();
+  await api.markGroupRead(groupId);
+  group.unread = 0; renderChatList(); renderChatBadge();
+  if (wasAtBottom) scrollChatToEnd();
+  else timeline.scrollTop = previousTop;
+  if (!preserveView) $('chatInput').focus();
+}
+
+async function openGroupActions() {
+  setGroupModalMode('create'); $('groupModalError').hidden = true; $('groupNameInput').value = ''; $('groupCodeInput').value = ''; $('groupModal').hidden = false; $('groupNameInput').focus();
+}
+
+function setGroupModalMode(mode) {
+  const create = mode === 'create';
+  $('groupCreateTab').classList.toggle('active', create); $('groupJoinTab').classList.toggle('active', !create);
+  $('groupCreateTab').setAttribute('aria-selected', String(create)); $('groupJoinTab').setAttribute('aria-selected', String(!create));
+  $('groupModalTitle').textContent = create ? '新建群聊' : '加入群聊';
+  $('groupModalDescription').textContent = create ? '创建局域网群聊，口令仅在同一网络中可用。' : '输入群主分享的 6 位口令，自动查找局域网中的群主。';
+  $('groupNameLabel').hidden = !create; $('groupNameInput').hidden = !create;
+  $('groupCodeLabel').hidden = create; $('groupCodeInput').hidden = create;
+  $('groupModalSubmit').textContent = create ? '创建群聊' : '查找并加入';
+  $('groupModalError').hidden = true;
+}
+
+async function submitGroupModal() {
+  const create = !$('groupNameInput').hidden;
+  $('groupModalSubmit').disabled = true;
+  try {
+    if (create) {
+      const name = $('groupNameInput').value.trim(); if (!name) { $('groupModalError').textContent = '请先输入群聊名称'; $('groupModalError').hidden = false; return; }
+      const result = await api.createGroup(name);
+      if (!result?.ok) throw new Error('创建失败，请确认群聊端口可用');
+      $('groupModal').hidden = true; await loadChats(); await openGroup(result.group.id); showGroupInvite(result.group, result.invite);
+    } else {
+      const code = $('groupCodeInput').value.replace(/\D/g, '').slice(0, 6); $('groupCodeInput').value = code;
+      if (code.length !== 6) { $('groupModalError').textContent = '请输入完整的 6 位数字口令'; $('groupModalError').hidden = false; return; }
+      $('groupModalSubmit').textContent = '正在查找…';
+      const result = await api.joinGroup(code);
+      if (!result?.ok) throw new Error(result?.reason || '口令无效或已过期');
+      $('groupModal').hidden = true; await loadChats(); await openGroup(result.group.id); toast('已加入群聊', 'ok');
+    }
+  } catch (error) {
+    $('groupModalError').textContent = String(error.message || error); $('groupModalError').hidden = false;
+  } finally { $('groupModalSubmit').disabled = false; $('groupModalSubmit').textContent = $('groupNameInput').hidden ? '查找并加入' : '创建群聊'; }
+}
+
+function showGroupInvite(group, invite) {
+  if (!group || !invite?.code) return;
+  CHAT.inviteGroupId = group.id;
+  $('groupInviteName').textContent = group.name || '群聊'; $('groupInviteCode').textContent = invite.code;
+  const minutes = Math.max(0, Math.ceil((Number(invite.expiresAt) - Date.now()) / 60000));
+  $('groupInviteExpiry').textContent = minutes ? `口令还剩 ${minutes} 分钟 · 仅限同一局域网` : '口令已过期 · 请刷新后继续';
+  $('groupInviteModal').hidden = false;
+}
+
+function askGroupConfirm(message, action) {
+  $('groupConfirmMessage').textContent = message; pendingGroupConfirm = action; $('groupConfirmModal').hidden = false;
+}
+
+async function manageActiveGroup() {
+  const group = CHAT.groups.find((g) => g.id === CHAT.activeGroupId); if (!group) return;
+  const owner = group.ownerId === S.self?.deviceId;
+  $('groupManageTitle').textContent = group.name || '群聊管理'; $('groupManageMeta').textContent = `${(group.members || []).length} 位成员 · ${owner ? '本机主持' : '群主主持'}`;
+  $('groupOwnerActions').hidden = !owner; $('groupMemberActions').hidden = owner;
+  const list = $('groupMemberList'); list.innerHTML = (group.members || []).map((member) => `<div class="group-member-row"><span class="group-member-avatar">${avatarMarkup(member.avatarData, member.type || (/^mobile[-_]/i.test(member.deviceId || '') ? 'mobile' : 'desktop'), 20)}</span><span class="group-member-copy"><strong>${esc(member.name || '设备')}${member.deviceId === S.self?.deviceId ? '（本机）' : ''}</strong><small>${esc(member.deviceId || '')}</small></span></div>`).join('') || '<div class="field-hint">暂无成员</div>';
+  const select = $('groupRemoveSelect'); select.innerHTML = (group.members || []).filter((m) => m.deviceId !== S.self?.deviceId).map((m) => `<option value="${esc(m.deviceId)}">${esc(m.name || '设备')} · ${esc(m.deviceId)}</option>`).join('');
+  $('groupRemoveMember').disabled = !select.options.length;
+  $('groupManageModal').hidden = false;
 }
 
 function scrollChatToEnd() {
@@ -1165,13 +1302,17 @@ function renderTimeline() {
 /** 单条消息 HTML */
 function messageHtml(m) {
   const out = m.dir === 'out';
-  const avatarType = out ? 'desktop' : (CHAT.peerType === 'mobile' ? 'mobile' : 'desktop');
-  const body = m.kind === 'file' ? fileCardHtml(m) : `<div class="bubble">${esc(m.text)}</div>`;
+  const activeGroup = CHAT.activeGroupId ? (CHAT.groups || []).find((g) => g.id === CHAT.activeGroupId) : null;
+  const groupMember = activeGroup && !out ? (activeGroup.members || []).find((member) => member.deviceId === m.senderId) : null;
+  const directPeer = !activeGroup ? ((CHAT.chats || []).find((chat) => chat.peerId === CHAT.activeId)?.peer || getAvailableDevices().find((device) => device.deviceId === CHAT.activeId)) : null;
+  const avatarType = out ? 'desktop' : (groupMember?.type || (CHAT.peerType === 'mobile' ? 'mobile' : 'desktop'));
+  const avatarData = out ? S.self?.avatarData : (groupMember?.avatarData || directPeer?.avatarData || '');
+  const body = m.kind === 'file' ? fileCardHtml(m) : `<div class="bubble">${CHAT.activeGroupId && !out ? `<small class="group-sender">${esc(m.senderName || '成员')}</small>` : ''}${esc(directMessageText(m, directPeer?.name))}</div>`;
   const copyLabel = window.LTP_I18N?.t('复制') || '复制';
   const copyAria = window.LTP_I18N?.t('复制消息内容') || '复制消息内容';
   return `
     <div class="msg${out ? ' out' : ''}" data-msgid="${esc(m.msgId)}">
-      <div class="msg-avatar" role="img" aria-label="${avatarType === 'mobile' ? '手机' : '电脑'}">${window.Icons.icon(avatarType, { size: 16, sw: 1.7 })}</div>
+      <div class="msg-avatar" role="img" aria-label="${avatarType === 'mobile' ? '手机' : '电脑'}">${avatarMarkup(avatarData, avatarType, 16)}</div>
       <div class="msg-body">
         ${body}
         <div class="msg-meta">
@@ -1230,7 +1371,7 @@ function bindMessageActions(root) {
     const files = message.attachment?.files || [];
     const content = message.kind === 'file'
       ? files.map((file) => file.name).filter(Boolean).join('\n') || message.text || ''
-      : message.text || '';
+      : directMessageText(message, CHAT.activeGroupId ? '' : (CHAT.chats || []).find((chat) => chat.peerId === CHAT.activeId)?.peer?.name);
     if (!content) return;
     try {
       await api.copyText(content);
@@ -1292,18 +1433,22 @@ async function sendChatText() {
   autoGrowInput();
   CHAT.sending = true;
   try {
-    const r = await api.sendChatText(CHAT.activeId, text);
+    const r = CHAT.activeGroupId ? await api.sendGroupText(CHAT.activeGroupId, text) : await api.sendChatText(CHAT.activeId, text);
     if (!(r && r.ok)) {
-      toast(r && r.reason === 'offline' ? '对方不在线，消息已保留为未送达' : '发送失败', 'err');
-    } else if (!r.delivered) {
+      if (CHAT.activeGroupId) { input.value = text; autoGrowInput(); input.focus(); }
+      toast(CHAT.activeGroupId ? '群主离线，消息未发送' : (r && r.reason === 'offline' ? '对方不在线，消息已保留为未送达' : '发送失败'), 'err');
+    } else if (!CHAT.activeGroupId && !r.delivered) {
       toast('对方不在线，消息已保留为未送达', 'err');
     }
+  } catch (error) {
+    input.value = text; autoGrowInput(); input.focus();
+    toast(`发送失败：${String(error.message || error)}`, 'err');
   } finally { CHAT.sending = false; }
 }
 
 async function sendChatFiles(paths) {
   if (!CHAT.activeId || !paths || !paths.length) return;
-  const r = await api.sendChatFiles(CHAT.activeId, paths, +$('throttleSel').value || 0);
+  const r = CHAT.activeGroupId ? await api.sendGroupFiles(CHAT.activeGroupId, paths) : await api.sendChatFiles(CHAT.activeId, paths, +$('throttleSel').value || 0);
   if (!(r && r.ok)) {
     toast(r && r.reason === 'offline' ? '对方不在线，无法发送文件' : `文件发送失败：${(r && r.reason) || '未知错误'}`, 'err');
   } else {
@@ -1352,12 +1497,51 @@ if ($('chatInput')) {
     if (!items.length) { toast('当前没有在线设备，请先在「连接」页扫描', 'err'); return; }
     openChat(items[0].deviceId);
   });
+  $('btnNewGroup').addEventListener('click', openGroupActions);
+  $('btnGroupManage').addEventListener('click', manageActiveGroup);
+  $('groupCreateTab').addEventListener('click', () => setGroupModalMode('create'));
+  $('groupJoinTab').addEventListener('click', () => setGroupModalMode('join'));
+  $('groupModalSubmit').addEventListener('click', submitGroupModal);
+  $('groupModalCancel').addEventListener('click', () => { $('groupModal').hidden = true; });
+  $('groupModalClose').addEventListener('click', () => { $('groupModal').hidden = true; });
+  $('groupCodeInput').addEventListener('input', () => { $('groupCodeInput').value = $('groupCodeInput').value.replace(/\D/g, '').slice(0, 6); });
+  ['groupNameInput', 'groupCodeInput'].forEach((id) => $(id).addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); submitGroupModal(); } }));
+  $('groupInviteClose').addEventListener('click', () => { $('groupInviteModal').hidden = true; });
+  $('groupInviteDone').addEventListener('click', () => { $('groupInviteModal').hidden = true; });
+  $('groupInviteCopy').addEventListener('click', async () => { await api.copyText($('groupInviteCode').textContent); toast('群聊口令已复制', 'ok'); });
+  $('groupInviteRefresh').addEventListener('click', async () => {
+    const code = await api.refreshGroupInvite(CHAT.inviteGroupId);
+    if (!code) { toast('无法刷新口令', 'err'); return; }
+    $('groupInviteCode').textContent = code.code; toast('口令已刷新，旧口令失效', 'ok');
+  });
+  $('groupManageClose').addEventListener('click', () => { $('groupManageModal').hidden = true; });
+  $('groupManageDone').addEventListener('click', () => { $('groupManageModal').hidden = true; });
+  $('groupShowCode').addEventListener('click', async () => { const group = CHAT.groups.find((g) => g.id === CHAT.activeGroupId); if (group) showGroupInvite(group, await api.getGroupInvite(group.id)); });
+  $('groupRefreshCode').addEventListener('click', async () => { const group = CHAT.groups.find((g) => g.id === CHAT.activeGroupId); if (!group) return; showGroupInvite(group, await api.refreshGroupInvite(group.id)); });
+  $('groupRemoveMember').addEventListener('click', async () => { const id = $('groupRemoveSelect').value; if (!id) return; await api.removeGroupMember(CHAT.activeGroupId, id); await loadChats(); await manageActiveGroup(); });
+  $('groupDissolve').addEventListener('click', () => askGroupConfirm('解散后所有成员都会被移出群聊，且无法恢复。', async () => { await api.dissolveGroup(CHAT.activeGroupId); $('groupManageModal').hidden = true; CHAT.activeGroupId = ''; CHAT.activeId = ''; await loadChats(); $('chatHead').hidden = true; $('chatComposer').hidden = true; $('chatEmpty').hidden = false; }));
+  $('groupLeave').addEventListener('click', () => askGroupConfirm('退出后将停止接收此群聊的新消息。', async () => { await api.leaveGroup(CHAT.activeGroupId); $('groupManageModal').hidden = true; CHAT.activeGroupId = ''; CHAT.activeId = ''; await loadChats(); $('chatHead').hidden = true; $('chatComposer').hidden = true; $('chatEmpty').hidden = false; }));
+  $('groupConfirmCancel').addEventListener('click', () => { $('groupConfirmModal').hidden = true; pendingGroupConfirm = null; });
+  $('groupConfirmAccept').addEventListener('click', async () => { const action = pendingGroupConfirm; pendingGroupConfirm = null; $('groupConfirmModal').hidden = true; if (action) await action(); });
   $('btnChatClear').addEventListener('click', async () => {
     if (!CHAT.activeId) return;
     await api.clearChat(CHAT.activeId);
     CHAT.messages.set(CHAT.activeId, []);
     renderTimeline();
     toast('已清空当前会话', 'ok');
+  });
+  $('btnChatAlias').addEventListener('click', async () => {
+    if (!CHAT.activeId) return;
+    const chat = (CHAT.chats || []).find((c) => c.peerId === CHAT.activeId);
+    const label = prompt('为这台设备设置备注（留空恢复设备原名）', (chat && chat.alias) || '');
+    if (label === null) return;
+    const result = await api.setChatAlias(CHAT.activeId, label);
+    if (result && result.ok) {
+      await loadChats();
+      const peer = getAvailableDevices().find((d) => d.deviceId === CHAT.activeId) || (chat && chat.peer) || {};
+      $('chatPeerName').textContent = label.trim() || peer.name || CHAT.activeId;
+      toast(label.trim() ? '设备备注已保存' : '已恢复设备原名', 'ok');
+    }
   });
 
   // 拖拽文件到对话区即可发送
@@ -1386,7 +1570,10 @@ if ($('chatInput')) {
 $('btnSettings').addEventListener('click', async () => {
   const self = S.self || (await api.getSelf());
   $('setName').value = self.name;
+  $('setAvatarPreview').src = self.avatarData || '';
+  $('setAvatarPreview').style.display = self.avatarData ? 'block' : 'none';
   $('setSaveDir').value = self.saveDir;
+  $('setTheme').value = window.LTP_I18N?.getTheme() || 'dark';
   $('setInfo').innerHTML = `
     设备 ID：<code>${esc(self.deviceId)}</code><br>
     设备指纹：<code>${esc(self.fingerprint || '-')}</code><br>
@@ -1398,11 +1585,42 @@ $('btnSettings').addEventListener('click', async () => {
   $('settingsModal').hidden = false;
 });
 
+$('btnChooseAvatar').addEventListener('click', () => $('avatarFile').click());
+$('avatarFile').addEventListener('change', async (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 96;
+    const side = Math.min(bitmap.width, bitmap.height);
+    canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 96, 96);
+    bitmap.close();
+    const data = canvas.toDataURL('image/jpeg', 0.78);
+    const result = await api.setAvatar(data);
+    if (!result || !result.ok) throw new Error('头像保存失败');
+    $('setAvatarPreview').src = data;
+    $('setAvatarPreview').style.display = 'block';
+    await loadSelf();
+    toast('设备头像已更新', 'ok');
+  } catch (error) { toast(error.message || '无法读取这张图片', 'err'); }
+  event.target.value = '';
+});
+$('btnClearAvatar').addEventListener('click', async () => {
+  const result = await api.setAvatar('');
+  if (result && result.ok) {
+    $('setAvatarPreview').removeAttribute('src');
+    $('setAvatarPreview').style.display = 'none';
+    await loadSelf();
+    toast('已恢复默认设备图标', 'ok');
+  }
+});
+
 $('btnFixFirewall').addEventListener('click', async () => {
   $('firewallStatus').textContent = '正在请求 Windows 管理员权限…';
   const r = await api.ensureFirewall();
   if (r && r.ok) {
-    $('firewallStatus').textContent = '已允许局域网访问端口 53317';
+    $('firewallStatus').textContent = '已允许局域网访问端口 53317、53318、53300';
     $('firewallStatus').dataset.ready = '1';
     toast('局域网权限已配置', 'ok');
   } else {
@@ -1429,6 +1647,12 @@ $('btnSaveSettings').addEventListener('click', async () => {
 });
 
 $('btnRefresh').addEventListener('click', async () => { await loadDevices(); toast('设备列表已刷新'); });
+
+$('setTheme').addEventListener('change', (event) => {
+  const theme = event.target.value === 'light' ? 'light' : 'dark';
+  window.LTP_I18N?.setTheme(theme);
+  toast(theme === 'light' ? '浅色模式已启用' : '深色模式已启用', 'ok');
+});
 
 function bindLanguageControl(control) {
   if (!control || control.dataset.bound === '1') return;
@@ -1473,7 +1697,7 @@ async function handleEvent(ev, payload) {
     const holder = $('firewallStatus');
     if (holder) {
       holder.textContent = payload && payload.ok
-        ? '已允许局域网访问端口 53317'
+        ? '已允许局域网访问端口 53317、53318、53300'
         : '局域网权限未配置，请在设置中点击“自动配置”。';
       holder.dataset.ready = payload && payload.ok ? '1' : '';
     }
@@ -1603,6 +1827,17 @@ function bindEvents() {
       });
     }
     loadChats();
+  });
+  api.onGroupEvent((ev) => {
+    if (!ev) return;
+    loadChats().then(() => {
+      const id = ev.groupId || ev.group?.id;
+      if (id && id === CHAT.activeGroupId) {
+        if (ev.kind === 'group:dissolved' || ev.kind === 'group:removed') {
+          CHAT.activeGroupId = ''; CHAT.activeId = ''; $('chatHead').hidden = true; $('chatComposer').hidden = true; $('chatEmpty').hidden = false;
+        } else openGroup(id, { preserveView: true });
+      }
+    });
   });
 
   // 进度事件：高频，单独处理

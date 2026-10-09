@@ -21,6 +21,19 @@ const EventEmitter = require('events');
 const P = require('../../../shared/protocol.js');
 const { FileSender, FileReceiver, buildSendList } = require('./transfer.js');
 
+// Older Android builds could serialize the direct-chat peer name into the
+// visible text (for example: "我的手机：你好"). Keep the wire format clean and
+// only remove that unambiguous legacy prefix; a name without a separator is
+// still valid user content and must remain untouched.
+function stripLegacyDirectSenderPrefix(value, peerName) {
+  const text = String(value || '');
+  const name = String(peerName || '').trim();
+  if (!name || !text.startsWith(name)) return text;
+  const rest = text.slice(name.length);
+  if (!/^\s*[:：|>-]\s*/.test(rest)) return text;
+  return rest.replace(/^\s*[:：|>-]\s*/, '');
+}
+
 class Session extends EventEmitter {
   constructor(sock, opts) {
     super();
@@ -100,12 +113,14 @@ class Session extends EventEmitter {
       case P.MSG.CHAT_SEND: return this._onChatSend(msg);
       case P.MSG.CHAT_ACK: return this._onChatAck(msg);
       case P.MSG.CHAT_READ: return this._onChatRead(msg);
+      case P.MSG.PROFILE_UPDATE: return this._onProfileUpdate(msg);
       default: return;
     }
   }
 
   _onHello(msg) {
     this.peerDevice = msg.device || null;
+    if (this.peerDevice && (typeof this.peerDevice.avatarData !== 'string' || !/^data:image\/jpeg;base64,[A-Za-z0-9+/=]{1,22000}$/.test(this.peerDevice.avatarData))) delete this.peerDevice.avatarData;
     const auth = msg.auth || {};
 
     // 1) 已配对：校验长期令牌
@@ -559,7 +574,7 @@ class Session extends EventEmitter {
     const chatStore = this.server.chatStore;
     if (!chatStore) return;
 
-    let text = String(msg.text || '');
+    let text = stripLegacyDirectSenderPrefix(String(msg.text || ''), this.peerDevice && this.peerDevice.name);
     if (text.length > P.CHAT_TEXT_MAX) {
       this.send(P.makeMessage(P.MSG.ERROR, {
         code: P.ERR.CHAT_TOO_LONG, message: `单条消息超过 ${P.CHAT_TEXT_MAX} 字`,
@@ -582,6 +597,7 @@ class Session extends EventEmitter {
       } : null),
       peerName: this.peerDevice && this.peerDevice.name,
       peerType: this.peerDevice && this.peerDevice.type,
+      peerAvatarData: this.peerDevice && this.peerDevice.avatarData,
       silent: !!msg.silent,
     });
 
@@ -599,6 +615,15 @@ class Session extends EventEmitter {
         sessionId: this.id,
       });
     }
+  }
+
+  _onProfileUpdate(msg) {
+    if (!this.paired || !this.peerDevice || !msg.device || msg.device.deviceId !== this.peerDevice.deviceId) return;
+    const device = msg.device;
+    if (typeof device.name === 'string' && device.name.trim()) this.peerDevice.name = device.name.trim().slice(0, 64);
+    if (typeof device.avatarData === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]{1,22000}$/.test(device.avatarData)) this.peerDevice.avatarData = device.avatarData;
+    const chat = this.server.chatStore && this.server.chatStore.openChat(this.peerDevice);
+    if (chat) this.server.emit('chat:profile', { peerId: this.peerDevice.deviceId, peer: this.peerDevice });
   }
 
   /** 对方确认收到我们的消息 */
@@ -708,6 +733,7 @@ class TransferServer extends EventEmitter {
       protocol: P.PROTOCOL_ID,
       pairingRequired: true,
       fingerprint: this.self.fingerprint || '',
+      avatarData: this.self.avatarData || '',
     };
   }
 
